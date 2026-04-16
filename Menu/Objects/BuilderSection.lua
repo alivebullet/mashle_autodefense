@@ -154,7 +154,7 @@ end
 function BuilderSection:refresh()
 	local values = self.timingType.Value == "Internal" and self.pair.internal:names() or self.pair.config:names()
 	self.timingList:SetValues(values)
-	self.timingList:SetValue(nil)
+	self.timingList:SetRawValue(nil)
 	self.timingList:Display()
 end
 
@@ -466,9 +466,6 @@ function BuilderSection:timing()
 		Callback = function()
 			-- Refresh timing list.
 			self:refresh()
-
-			-- Reset elements.
-			self:reset()
 		end,
 	})
 
