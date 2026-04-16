@@ -43,9 +43,6 @@ local Serializer = require("Utility/Serializer")
 ---@module Utility.Logger
 local Logger = require("Utility/Logger")
 
----@module Game.Timings.InternalTimingData
-local InternalTimingData = require("Game/Timings/InternalTimingData")
-
 -- Manager filesystem.
 local fs = Filesystem.new("Lycoris-Rewrite-TypeSoul-Timings")
 
@@ -58,35 +55,48 @@ local runService = game:GetService("RunService")
 -- Maids.
 local saveMaid = Maid.new()
 
----Try loading embedded internal timing data (generated at build time by embed_timings.js).
+---Try loading internal timings from the executor workspace folder.
 ---@param animationContainer TimingContainer
 ---@param partContainer TimingContainer
 ---@param soundContainer TimingContainer
 ---@return boolean
-local function loadEmbeddedInternalTimings(animationContainer, partContainer, soundContainer)
-	local rawData = InternalTimingData
-	if not rawData or type(rawData) ~= "string" or #rawData == 0 then
-		return false
+local function loadInternalTimings(animationContainer, partContainer, soundContainer)
+	local candidates = { "internal.txt", "truth.txt", "base.txt" }
+
+	for _, name in next, candidates do
+		local exists = pcall(fs.file, fs, name)
+		if not exists or not fs:file(name) then
+			continue
+		end
+
+		local readOk, readResult = pcall(fs.read, fs, name)
+		if not readOk or not readResult then
+			Logger.warn("Failed to read internal timing file '%s': %s", name, tostring(readResult))
+			continue
+		end
+
+		local decodeOk, decodeResult = pcall(Deserializer.unmarshal_one, String.tba(readResult))
+		if not decodeOk or typeof(decodeResult) ~= "table" then
+			Logger.warn("Failed to deserialize internal timing file '%s': %s", name, tostring(decodeResult))
+			continue
+		end
+
+		local loadOk, loadErr = pcall(function()
+			animationContainer:load(decodeResult.animation or {})
+			partContainer:load(decodeResult.part or {})
+			soundContainer:load(decodeResult.sound or {})
+		end)
+
+		if not loadOk then
+			Logger.warn("Failed to load internal timing file '%s': %s", name, tostring(loadErr))
+			continue
+		end
+
+		Logger.notify("Internal timings loaded from '%s'.", name)
+		return true
 	end
 
-	local decodeOk, decodeResult = pcall(Deserializer.unmarshal_one, String.tba(rawData))
-	if not decodeOk or typeof(decodeResult) ~= "table" then
-		Logger.warn("Failed to deserialize embedded timing data: %s", tostring(decodeResult))
-		return false
-	end
-	local loadOk, loadErr = pcall(function()
-		animationContainer:load(decodeResult.animation or {})
-		partContainer:load(decodeResult.part or {})
-		soundContainer:load(decodeResult.sound or {})
-	end)
-
-	if not loadOk then
-		Logger.warn("Failed to load embedded timing data: %s", tostring(loadErr))
-		return false
-	end
-
-	Logger.notify("Internal timing seed loaded from embedded data.")
-	return true
+	return false
 end
 
 ---Get save files list.
@@ -341,8 +351,8 @@ function SaveManager.init()
 	local internalPartContainer = TimingContainer.new(PartTiming.new())
 	local internalSoundContainer = TimingContainer.new(SoundTiming.new())
 
-	-- Seed from embedded timing data when available; otherwise keep empty internal timings.
-	if not loadEmbeddedInternalTimings(internalAnimationContainer, internalPartContainer, internalSoundContainer) then
+	-- Seed from internal timing file when available; otherwise keep empty internal timings.
+	if not loadInternalTimings(internalAnimationContainer, internalPartContainer, internalSoundContainer) then
 		internalAnimationContainer:load({})
 		internalPartContainer:load({})
 		internalSoundContainer:load({})
