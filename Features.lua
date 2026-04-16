@@ -16,6 +16,9 @@ local Defense = require("Features/Combat/Defense")
 ---@module Features.Game.AnimationVisualizer
 local AnimationVisualizer = require("Features/Game/AnimationVisualizer")
 
+---@module Features.Game.AnimationLogger
+local AnimationLogger = require("Features/Game/AnimationLogger")
+
 ---@modules Features.Combat.AttributeListener
 local AttributeListener = require("Features/Combat/AttributeListener")
 
@@ -46,21 +49,16 @@ function Features.init()
 	Exploits.init()
 	Removal.init()
 	Input.init()
-
-	-- Only initialize if we're a builder.
-	if not armorshield or armorshield.current_role == "builder" then
-		AnimationVisualizer.init()
-	end
+	AnimationVisualizer.init()
+	AnimationLogger.init()
 
 	Logger.warn("Features initialized.")
 end
 
 ---Detach features.
 function Features.detach()
-	-- Only detach if we're a builder.
-	if not armorshield or armorshield.current_role == "builder" then
-		AnimationVisualizer.detach()
-	end
+	AnimationVisualizer.detach()
+	AnimationLogger.detach()
 
 	Monitoring.detach()
 	AttributeListener.detach()

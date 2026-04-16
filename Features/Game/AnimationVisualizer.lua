@@ -3,9 +3,6 @@ return LPH_NO_VIRTUALIZE(function()
 	---@note: This code is UI code. It is ugly on purpose and lazily made.
 	local AnimationVisualizer = {}
 
-	---@module Features.Combat.Defense
-	local Defense = require("Features/Combat/Defense")
-
 	---@module Utility.Signal
 	local Signal = require("Utility/Signal")
 
@@ -266,7 +263,6 @@ return LPH_NO_VIRTUALIZE(function()
 	animationTextbox.Parent = inner
 
 	-- Current data for playback loop.
-	local currentPlaybackData = nil
 	local currentTrack = nil
 	local isPaused = false
 	local timeElapsed = 0.0
@@ -292,12 +288,11 @@ return LPH_NO_VIRTUALIZE(function()
 
 		-- Empty out previous data.
 		currentTrack = nil
-		currentPlaybackData = nil
 
-		---@type PlaybackData
-		local playbackData = Defense.agpd(animationTextbox.Text)
-		if not playbackData then
-			return AnimationVisualizer.message("No Playback Data Found")
+		-- Get the local player's character as the entity.
+		local character = players.LocalPlayer and players.LocalPlayer.Character
+		if not character then
+			return AnimationVisualizer.message("No Character Found")
 		end
 
 		-- Remove all previously loaded models.
@@ -310,10 +305,10 @@ return LPH_NO_VIRTUALIZE(function()
 		end
 
 		-- Archivable.
-		playbackData.entity.Archivable = true
+		character.Archivable = true
 
 		-- Load the model & center it.
-		local entity = playbackData.entity:Clone()
+		local entity = character:Clone()
 		if not entity then
 			return AnimationVisualizer.message("Failed To Clone Entity")
 		end
@@ -346,8 +341,7 @@ return LPH_NO_VIRTUALIZE(function()
 		local animation = Instance.new("Animation")
 		animation.AnimationId = animationTextbox.Text
 
-		-- Store current data for playback.
-		currentPlaybackData = playbackData
+		-- Store current track for playback.
 		currentTrack = animator:LoadAnimation(animation)
 
 		-- Play animation and keep it at zero speed.
@@ -371,46 +365,12 @@ return LPH_NO_VIRTUALIZE(function()
 	---@param animationLength number
 	---@return number?
 	local function getTimeElapsedFromTp(timePosition, animationLength)
-		if not currentPlaybackData then
-			return nil
-		end
-
 		if timePosition <= 0 then
 			return 0.0
 		end
 
-		-- Numerical integration to find elapsed time.
-		local currentPos = 0
-		local elapsed = 0
-		local dt = 0.01
-		local iterations = 0
-
-		while currentPos < timePosition do
-			local speed = currentPlaybackData:last(elapsed) or 1
-			local stepSize = speed * dt
-
-			iterations = iterations + 1
-
-			---@note: We can calculate how many iterations this should likely take based on the length (e.g 4 seconds) of the animation.
-			--- Since we have a delta time of 0.01s, that means we can multiply the length by 100 to get our iteration amount.
-			--- Then, we should multiply that number by 10 to act as a buffer. At minimum, we'll allow for 1000 iterations.
-			if iterations >= math.max(((animationLength * 100) * 10), 1000) then
-				break
-			end
-
-			-- If adding the full step would exceed the target position, calculate partial step and break.
-			if currentPos + stepSize > timePosition then
-				local remainingTime = (timePosition - currentPos) / speed
-				elapsed = elapsed + remainingTime
-				break
-			end
-
-			currentPos = currentPos + stepSize
-			elapsed = elapsed + dt
-		end
-
-		-- Return the elapsed time.
-		return elapsed
+		-- At constant speed 1.0, elapsed time equals time position.
+		return timePosition
 	end
 
 	---On playback loop.
@@ -427,7 +387,7 @@ return LPH_NO_VIRTUALIZE(function()
 		local hs = currentTrack and mapSliderValue(currentTrack.TimePosition, 0.0, currentTrack.Length, 0, mhs) or 0.0
 
 		-- Update slider text.
-		sliderText.Text = (currentTrack and currentPlaybackData)
+		sliderText.Text = currentTrack
 				and string.format(
 					"%.3f/%.3f (%ims)",
 					currentTrack.TimePosition,
@@ -457,7 +417,7 @@ return LPH_NO_VIRTUALIZE(function()
 			end
 		end
 
-		if not currentTrack or not currentPlaybackData then
+		if not currentTrack then
 			return
 		end
 
@@ -467,7 +427,7 @@ return LPH_NO_VIRTUALIZE(function()
 
 		timeElapsed = timeElapsed + delta
 
-		currentTrack:AdjustSpeed(currentPlaybackData:last(timeElapsed) or 0.0)
+		currentTrack:AdjustSpeed(1.0)
 	end
 
 	---Toggle play stop function.

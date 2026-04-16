@@ -28,6 +28,9 @@ local ModuleManager = require("Game/Timings/ModuleManager")
 ---@module Utility.CoreGuiManager
 local CoreGuiManager = require("Utility/CoreGuiManager")
 
+---@module Features.Game.AnimationLogger
+local AnimationLogger = require("Features/Game/AnimationLogger")
+
 ---@module Utility.PersistentData
 local PersistentData = require("Utility/PersistentData")
 
@@ -122,6 +125,7 @@ queuedChunk()
 		Logger.warn("Script initialized in compatibility mode for unsupported game: " .. tostring(game.PlaceId))
 		safeCall("CoreGuiManager.set", CoreGuiManager.set)
 		safeCall("Menu.init", Menu.init)
+		safeCall("AnimationLogger.init", AnimationLogger.init)
 		return Logger.notify("Compatibility UI mode is active in %ims.", (os.clock() - startTimestamp) * 1000)
 	end
 
@@ -154,6 +158,7 @@ queuedChunk()
 		Logger.warn("Script initialized in compatibility mode: missing ReplicatedStorage.Remotes.")
 		safeCall("CoreGuiManager.set", CoreGuiManager.set)
 		safeCall("Menu.init", Menu.init)
+		safeCall("AnimationLogger.init", AnimationLogger.init)
 		return Logger.notify("Compatibility UI mode is active in %ims.", (os.clock() - startTimestamp) * 1000)
 	end
 
