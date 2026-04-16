@@ -6,7 +6,7 @@
         {
             "label": "Build Lua",
             "type": "shell",
-            "command": "luabundler bundle Main.lua -p \"./?.lua\" -o Output/Bundled.lua -l 5.1",
+            "command": "node embed_timings.js; luabundler bundle Main.lua -p \"./?.lua\" -o Output/Bundled.lua -l 5.1",
             "problemMatcher": [],
             "group": {
                 "kind": "build",
