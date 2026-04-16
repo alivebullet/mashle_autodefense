@@ -1,0 +1,29 @@
+{
+  "patch_id": "b29a487c-0301-4e33-ae60-e1a1804aa969",
+  "timestamp": "2025-09-16T21:30:59.533469",
+  "author": "Blastbrean",
+  "diff": {
+    "animation": {
+      "rbxassetid://14071606661": {
+        "status": "modified",
+        "changes": {
+          "imxd": {
+            "from": 32,
+            "to": 53
+          }
+        }
+      }
+    },
+    "part": {
+      "BladeCero": {
+        "status": "modified",
+        "changes": {
+          "imdd": {
+            "from": 29,
+            "to": 54
+          }
+        }
+      }
+    }
+  }
+}

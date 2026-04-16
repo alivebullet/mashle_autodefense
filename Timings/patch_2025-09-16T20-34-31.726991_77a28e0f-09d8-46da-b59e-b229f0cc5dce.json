@@ -1,0 +1,48 @@
+{
+  "patch_id": "77a28e0f-09d8-46da-b59e-b229f0cc5dce",
+  "timestamp": "2025-09-16T20:34:31.726991",
+  "author": "Blastbrean",
+  "diff": {
+    "animation": {
+      "rbxassetid://14070698725": {
+        "status": "added",
+        "data": {
+          "phd": false,
+          "umoa": false,
+          "dp": false,
+          "rpd": 0,
+          "pfht": 0.15,
+          "smod": "N/A",
+          "aatk": false,
+          "scrambled": false,
+          "iae": false,
+          "ieae": false,
+          "ha": false,
+          "duih": false,
+          "actions": [],
+          "pfh": false,
+          "ndfb": false,
+          "rsd": 0,
+          "after": 0,
+          "_id": "rbxassetid://14070698725",
+          "mat": 2000,
+          "rpue": false,
+          "srpn": false,
+          "phds": 0,
+          "hitbox": {
+            "Y": 0,
+            "X": 0,
+            "Z": 0
+          },
+          "punishable": 0,
+          "name": "VampResCrit",
+          "imxd": 0,
+          "smn": false,
+          "fhb": true,
+          "imdd": 0,
+          "tag": "Undefined"
+        }
+      }
+    }
+  }
+}

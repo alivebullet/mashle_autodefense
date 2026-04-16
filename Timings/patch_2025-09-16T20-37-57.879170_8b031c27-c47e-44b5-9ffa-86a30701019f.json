@@ -1,0 +1,111 @@
+{
+  "patch_id": "8b031c27-c47e-44b5-9ffa-86a30701019f",
+  "timestamp": "2025-09-16T20:37:57.879170",
+  "author": "Blastbrean",
+  "diff": {
+    "animation": {
+      "rbxassetid://14843286913": {
+        "status": "added",
+        "data": {
+          "phd": false,
+          "umoa": false,
+          "dp": false,
+          "rpd": 0,
+          "pfht": 0.15,
+          "smod": "N/A",
+          "aatk": false,
+          "scrambled": false,
+          "iae": false,
+          "ieae": false,
+          "ha": false,
+          "duih": false,
+          "actions": [
+            {
+              "_type": "Parry",
+              "name": "1",
+              "hitbox": {
+                "Y": 19,
+                "X": 18,
+                "Z": 18
+              },
+              "when": 350,
+              "ihbc": false
+            }
+          ],
+          "pfh": false,
+          "ndfb": false,
+          "rsd": 0,
+          "after": 0,
+          "_id": "rbxassetid://14843286913",
+          "mat": 2000,
+          "rpue": false,
+          "srpn": false,
+          "phds": 0,
+          "hitbox": {
+            "Y": 0,
+            "X": 0,
+            "Z": 0
+          },
+          "punishable": 0,
+          "name": "VampHit2",
+          "imxd": 0,
+          "smn": false,
+          "fhb": true,
+          "imdd": 0,
+          "tag": "Undefined"
+        }
+      },
+      "rbxassetid://14843290764": {
+        "status": "added",
+        "data": {
+          "phd": false,
+          "umoa": false,
+          "dp": false,
+          "rpd": 0,
+          "pfht": 0.15,
+          "smod": "N/A",
+          "aatk": false,
+          "scrambled": false,
+          "iae": false,
+          "ieae": false,
+          "ha": false,
+          "duih": false,
+          "actions": [
+            {
+              "_type": "Parry",
+              "name": "1",
+              "hitbox": {
+                "Y": 19,
+                "X": 18,
+                "Z": 18
+              },
+              "when": 350,
+              "ihbc": false
+            }
+          ],
+          "pfh": false,
+          "ndfb": false,
+          "rsd": 0,
+          "after": 0,
+          "_id": "rbxassetid://14843290764",
+          "mat": 2000,
+          "rpue": false,
+          "srpn": false,
+          "phds": 0,
+          "hitbox": {
+            "Y": 0,
+            "X": 0,
+            "Z": 0
+          },
+          "punishable": 0,
+          "name": "VampHit5",
+          "imxd": 0,
+          "smn": false,
+          "fhb": true,
+          "imdd": 0,
+          "tag": "Undefined"
+        }
+      }
+    }
+  }
+}

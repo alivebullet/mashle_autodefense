@@ -1,0 +1,52 @@
+{
+  "patch_id": "a6bc9a0b-d534-4282-9aac-eda0359816b6",
+  "timestamp": "2025-09-16T21:28:23.486583",
+  "author": "Blastbrean",
+  "diff": {
+    "animation": {
+      "rbxassetid://14071606661": {
+        "status": "modified",
+        "changes": {
+          "imdd": {
+            "from": 40,
+            "to": 0
+          },
+          "imxd": {
+            "from": 204,
+            "to": 32
+          }
+        }
+      }
+    },
+    "part": {
+      "BladeCero": {
+        "status": "added",
+        "data": {
+          "umoa": false,
+          "pname": "BladeCero",
+          "smod": "N/A",
+          "actions": [],
+          "ndfb": false,
+          "after": 0,
+          "uhc": false,
+          "scrambled": false,
+          "duih": false,
+          "srpn": false,
+          "aatk": false,
+          "hitbox": {
+            "Y": 0,
+            "X": 0,
+            "Z": 0
+          },
+          "punishable": 0,
+          "name": "BladeCero",
+          "imxd": 431,
+          "smn": false,
+          "fhb": true,
+          "imdd": 29,
+          "tag": "Undefined"
+        }
+      }
+    }
+  }
+}

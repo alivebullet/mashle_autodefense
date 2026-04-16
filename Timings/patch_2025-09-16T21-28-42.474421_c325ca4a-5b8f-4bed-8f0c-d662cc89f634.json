@@ -1,0 +1,46 @@
+{
+  "patch_id": "c325ca4a-5b8f-4bed-8f0c-d662cc89f634",
+  "timestamp": "2025-09-16T21:28:42.474421",
+  "author": "Blastbrean",
+  "diff": {
+    "part": {
+      "BladeCero": {
+        "status": "modified",
+        "changes": {
+          "hitbox": {
+            "from": {
+              "Y": 0,
+              "X": 0,
+              "Z": 0
+            },
+            "to": {
+              "Y": 10,
+              "X": 10,
+              "Z": 15
+            }
+          },
+          "duih": {
+            "from": false,
+            "to": true
+          },
+          "actions": {
+            "from": [],
+            "to": [
+              {
+                "_type": "Parry",
+                "name": "Release",
+                "hitbox": {
+                  "Y": 0,
+                  "X": 0,
+                  "Z": 0
+                },
+                "when": 0,
+                "ihbc": false
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

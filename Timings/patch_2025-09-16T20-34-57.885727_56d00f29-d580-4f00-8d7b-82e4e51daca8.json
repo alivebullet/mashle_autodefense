@@ -1,0 +1,13 @@
+{
+  "patch_id": "56d00f29-d580-4f00-8d7b-82e4e51daca8",
+  "timestamp": "2025-09-16T20:34:57.885727",
+  "author": "Blastbrean",
+  "diff": {
+    "animation": {
+      "rbxassetid://14070698725": {
+        "status": "removed",
+        "name": "VampResCrit"
+      }
+    }
+  }
+}
