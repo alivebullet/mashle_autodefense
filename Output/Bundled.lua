@@ -649,15 +649,19 @@ return LPH_NO_VIRTUALIZE(function()
 
 		HudRegistry = {},
 
-		FontColor = Color3.fromRGB(255, 255, 255),
-		MainColor = Color3.fromRGB(28, 28, 28),
-		BackgroundColor = Color3.fromRGB(20, 20, 20),
-		AccentColor = Color3.fromRGB(0, 85, 255),
-		OutlineColor = Color3.fromRGB(50, 50, 50),
-		RiskColor = Color3.fromRGB(255, 50, 50),
+		FontColor = Color3.fromRGB(39, 43, 51),
+		MainColor = Color3.fromRGB(255, 255, 255),
+		BackgroundColor = Color3.fromRGB(244, 240, 232),
+		AccentColor = Color3.fromRGB(232, 84, 74),
+		OutlineColor = Color3.fromRGB(222, 216, 205),
+		RiskColor = Color3.fromRGB(216, 76, 76),
 
-		Black = Color3.new(0, 0, 0),
-		Font = Font.fromEnum(Enum.Font.RobotoMono),
+		Black = Color3.fromRGB(222, 216, 205),
+		Font = Font.fromEnum(Enum.Font.Gotham),
+		FontEnum = Enum.Font.Gotham,
+		SurfaceCornerRadius = UDim.new(0, 18),
+		ControlCornerRadius = UDim.new(0, 10),
+		PillCornerRadius = UDim.new(0, 999),
 
 		OpenedFrames = {},
 		DependencyBoxes = {},
@@ -773,6 +777,19 @@ return LPH_NO_VIRTUALIZE(function()
 		end
 
 		return _Instance
+	end
+
+	function Library:ApplyCorner(Instance, Radius)
+		local Existing = Instance:FindFirstChildOfClass("UICorner")
+		if Existing then
+			Existing.CornerRadius = Radius or Library.ControlCornerRadius
+			return Existing
+		end
+
+		return Library:Create("UICorner", {
+			CornerRadius = Radius or Library.ControlCornerRadius,
+			Parent = Instance,
+		})
 	end
 
 	function Library:KeyBlacklists()
@@ -1293,6 +1310,8 @@ return LPH_NO_VIRTUALIZE(function()
 			Visible = false,
 		})
 
+		Library:ApplyCorner(Tooltip, Library.ControlCornerRadius)
+
 		local Label = Library:CreateLabel({
 			Position = UDim2.fromOffset(3, 1),
 			Size = UDim2.fromOffset(X, Y),
@@ -1405,7 +1424,7 @@ return LPH_NO_VIRTUALIZE(function()
 	end
 
 	function Library:GetTextBounds(Text, Font, Size, Resolution)
-		local Bounds = TextService:GetTextSize(Text, Size, "RobotoMono", Resolution or Vector2.new(1920, 1080))
+		local Bounds = TextService:GetTextSize(Text, Size, Library.FontEnum, Resolution or Vector2.new(1920, 1080))
 		return Bounds.X, Bounds.Y
 	end
 
@@ -2717,20 +2736,23 @@ return LPH_NO_VIRTUALIZE(function()
 
 			local function CreateBaseButton(Button)
 				local Outer = Library:Create("Frame", {
-					BackgroundColor3 = Color3.new(0, 0, 0),
-					BorderColor3 = Color3.new(0, 0, 0),
+					BackgroundColor3 = Library.MainColor,
+					BorderColor3 = Library.OutlineColor,
 					Size = UDim2.new(1, -4, 0, 20),
 					ZIndex = 5,
 				})
 
+				Library:ApplyCorner(Outer, Library.ControlCornerRadius)
+
 				local Inner = Library:Create("Frame", {
 					BackgroundColor3 = Library.MainColor,
 					BorderColor3 = Library.OutlineColor,
-					BorderMode = Enum.BorderMode.Inset,
 					Size = UDim2.new(1, 0, 1, 0),
 					ZIndex = 6,
 					Parent = Outer,
 				})
+
+				Library:ApplyCorner(Inner, UDim.new(0, 9))
 
 				local Label = Library:CreateLabel({
 					Size = UDim2.new(1, 0, 1, 0),
@@ -2742,8 +2764,8 @@ return LPH_NO_VIRTUALIZE(function()
 
 				Library:Create("UIGradient", {
 					Color = ColorSequence.new({
-						ColorSequenceKeypoint.new(0, Color3.new(1, 1, 1)),
-						ColorSequenceKeypoint.new(1, Color3.fromRGB(212, 212, 212)),
+						ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 255, 255)),
+						ColorSequenceKeypoint.new(1, Color3.fromRGB(247, 244, 239)),
 					}),
 					Rotation = 90,
 					Parent = Inner,
@@ -2758,7 +2780,7 @@ return LPH_NO_VIRTUALIZE(function()
 					BorderColor3 = "OutlineColor",
 				})
 
-				Library:OnHighlight(Outer, Outer, { BorderColor3 = "AccentColor" }, { BorderColor3 = "Black" })
+				Library:OnHighlight(Outer, Outer, { BorderColor3 = "AccentColor" }, { BorderColor3 = "OutlineColor" })
 
 				return Outer, Inner, Label
 			end
@@ -2950,21 +2972,24 @@ return LPH_NO_VIRTUALIZE(function()
 			Groupbox:AddBlank(1)
 
 			local TextBoxOuter = Library:Create("Frame", {
-				BackgroundColor3 = Color3.new(0, 0, 0),
-				BorderColor3 = Color3.new(0, 0, 0),
+				BackgroundColor3 = Library.MainColor,
+				BorderColor3 = Library.OutlineColor,
 				Size = UDim2.new(1, -4, 0, 20),
 				ZIndex = 5,
 				Parent = Container,
 			})
 
+			Library:ApplyCorner(TextBoxOuter, Library.ControlCornerRadius)
+
 			local TextBoxInner = Library:Create("Frame", {
 				BackgroundColor3 = Library.MainColor,
 				BorderColor3 = Library.OutlineColor,
-				BorderMode = Enum.BorderMode.Inset,
 				Size = UDim2.new(1, 0, 1, 0),
 				ZIndex = 6,
 				Parent = TextBoxOuter,
 			})
+
+			Library:ApplyCorner(TextBoxInner, UDim.new(0, 9))
 
 			Library:AddToRegistry(TextBoxInner, {
 				BackgroundColor3 = "MainColor",
@@ -2975,7 +3000,7 @@ return LPH_NO_VIRTUALIZE(function()
 				TextBoxOuter,
 				TextBoxOuter,
 				{ BorderColor3 = "AccentColor" },
-				{ BorderColor3 = "Black" }
+				{ BorderColor3 = "OutlineColor" }
 			)
 
 			if type(Info.Tooltip) == "string" then
@@ -2984,8 +3009,8 @@ return LPH_NO_VIRTUALIZE(function()
 
 			Library:Create("UIGradient", {
 				Color = ColorSequence.new({
-					ColorSequenceKeypoint.new(0, Color3.new(1, 1, 1)),
-					ColorSequenceKeypoint.new(1, Color3.fromRGB(212, 212, 212)),
+					ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 255, 255)),
+					ColorSequenceKeypoint.new(1, Color3.fromRGB(247, 244, 239)),
 				}),
 				Rotation = 90,
 				Parent = TextBoxInner,
@@ -3160,12 +3185,14 @@ return LPH_NO_VIRTUALIZE(function()
 			local Container = Groupbox.Container
 
 			local ToggleOuter = Library:Create("Frame", {
-				BackgroundColor3 = Color3.new(0, 0, 0),
-				BorderColor3 = Color3.new(0, 0, 0),
+				BackgroundColor3 = Library.MainColor,
+				BorderColor3 = Library.OutlineColor,
 				Size = UDim2.new(0, 13, 0, 13),
 				ZIndex = 5,
 				Parent = Container,
 			})
+
+			Library:ApplyCorner(ToggleOuter, UDim.new(0, 6))
 
 			Library:AddToRegistry(ToggleOuter, {
 				BorderColor3 = "Black",
@@ -3174,11 +3201,12 @@ return LPH_NO_VIRTUALIZE(function()
 			local ToggleInner = Library:Create("Frame", {
 				BackgroundColor3 = Library.MainColor,
 				BorderColor3 = Library.OutlineColor,
-				BorderMode = Enum.BorderMode.Inset,
 				Size = UDim2.new(1, 0, 1, 0),
 				ZIndex = 6,
 				Parent = ToggleOuter,
 			})
+
+			Library:ApplyCorner(ToggleInner, UDim.new(0, 5))
 
 			Library:AddToRegistry(ToggleInner, {
 				BackgroundColor3 = "MainColor",
@@ -3210,7 +3238,12 @@ return LPH_NO_VIRTUALIZE(function()
 				Parent = ToggleOuter,
 			})
 
-			Library:OnHighlight(ToggleRegion, ToggleOuter, { BorderColor3 = "AccentColor" }, { BorderColor3 = "Black" })
+			Library:OnHighlight(
+				ToggleRegion,
+				ToggleOuter,
+				{ BorderColor3 = "AccentColor" },
+				{ BorderColor3 = "OutlineColor" }
+			)
 
 			function Toggle:UpdateColors()
 				Toggle:Display()
@@ -3339,25 +3372,28 @@ return LPH_NO_VIRTUALIZE(function()
 			end
 
 			local SliderOuter = Library:Create("Frame", {
-				BackgroundColor3 = Color3.new(0, 0, 0),
-				BorderColor3 = Color3.new(0, 0, 0),
+				BackgroundColor3 = Library.MainColor,
+				BorderColor3 = Library.OutlineColor,
 				Size = UDim2.new(1, -4, 0, 13),
 				ZIndex = 5,
 				Parent = Container,
 			})
 
+			Library:ApplyCorner(SliderOuter, Library.PillCornerRadius)
+
 			Library:AddToRegistry(SliderOuter, {
-				BorderColor3 = "Black",
+				BorderColor3 = "OutlineColor",
 			})
 
 			local SliderInner = Library:Create("Frame", {
 				BackgroundColor3 = Library.MainColor,
 				BorderColor3 = Library.OutlineColor,
-				BorderMode = Enum.BorderMode.Inset,
 				Size = UDim2.new(1, 0, 1, 0),
 				ZIndex = 6,
 				Parent = SliderOuter,
 			})
+
+			Library:ApplyCorner(SliderInner, Library.PillCornerRadius)
 
 			Library:AddToRegistry(SliderInner, {
 				BackgroundColor3 = "MainColor",
@@ -3371,6 +3407,8 @@ return LPH_NO_VIRTUALIZE(function()
 				ZIndex = 7,
 				Parent = SliderInner,
 			})
+
+			Library:ApplyCorner(Fill, Library.PillCornerRadius)
 
 			Library:AddToRegistry(Fill, {
 				BackgroundColor3 = "AccentColor",
@@ -3398,7 +3436,12 @@ return LPH_NO_VIRTUALIZE(function()
 				Parent = SliderInner,
 			})
 
-			Library:OnHighlight(SliderOuter, SliderOuter, { BorderColor3 = "AccentColor" }, { BorderColor3 = "Black" })
+			Library:OnHighlight(
+				SliderOuter,
+				SliderOuter,
+				{ BorderColor3 = "AccentColor" },
+				{ BorderColor3 = "OutlineColor" }
+			)
 
 			if type(Info.Tooltip) == "string" then
 				Library:AddToolTip(Info.Tooltip, SliderOuter)
@@ -3598,25 +3641,28 @@ return LPH_NO_VIRTUALIZE(function()
 			end
 
 			local DropdownOuter = Library:Create("Frame", {
-				BackgroundColor3 = Color3.new(0, 0, 0),
-				BorderColor3 = Color3.new(0, 0, 0),
+				BackgroundColor3 = Library.MainColor,
+				BorderColor3 = Library.OutlineColor,
 				Size = UDim2.new(1, -4, 0, 20),
 				ZIndex = 5,
 				Parent = Container,
 			})
 
+			Library:ApplyCorner(DropdownOuter, Library.ControlCornerRadius)
+
 			Library:AddToRegistry(DropdownOuter, {
-				BorderColor3 = "Black",
+				BorderColor3 = "OutlineColor",
 			})
 
 			local DropdownInner = Library:Create("Frame", {
 				BackgroundColor3 = Library.MainColor,
 				BorderColor3 = Library.OutlineColor,
-				BorderMode = Enum.BorderMode.Inset,
 				Size = UDim2.new(1, 0, 1, 0),
 				ZIndex = 6,
 				Parent = DropdownOuter,
 			})
+
+			Library:ApplyCorner(DropdownInner, UDim.new(0, 9))
 
 			Library:AddToRegistry(DropdownInner, {
 				BackgroundColor3 = "MainColor",
@@ -3625,8 +3671,8 @@ return LPH_NO_VIRTUALIZE(function()
 
 			Library:Create("UIGradient", {
 				Color = ColorSequence.new({
-					ColorSequenceKeypoint.new(0, Color3.new(1, 1, 1)),
-					ColorSequenceKeypoint.new(1, Color3.fromRGB(212, 212, 212)),
+					ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 255, 255)),
+					ColorSequenceKeypoint.new(1, Color3.fromRGB(247, 244, 239)),
 				}),
 				Rotation = 90,
 				Parent = DropdownInner,
@@ -3657,7 +3703,7 @@ return LPH_NO_VIRTUALIZE(function()
 				DropdownOuter,
 				DropdownOuter,
 				{ BorderColor3 = "AccentColor" },
-				{ BorderColor3 = "Black" }
+				{ BorderColor3 = "OutlineColor" }
 			)
 
 			if type(Info.Tooltip) == "string" then
@@ -3667,13 +3713,15 @@ return LPH_NO_VIRTUALIZE(function()
 			local MAX_DROPDOWN_ITEMS = 8
 
 			local ListOuter = Library:Create("Frame", {
-				BackgroundColor3 = Color3.new(0, 0, 0),
-				BorderColor3 = Color3.new(0, 0, 0),
+				BackgroundColor3 = Library.MainColor,
+				BorderColor3 = Library.OutlineColor,
 				ZIndex = 20,
 				Visible = false,
 				Name = "ListOuter",
 				Parent = ScreenGui,
 			})
+
+			Library:ApplyCorner(ListOuter, Library.ControlCornerRadius)
 
 			local function RecalculateListPosition()
 				ListOuter.Position = UDim2.fromOffset(
@@ -3694,12 +3742,13 @@ return LPH_NO_VIRTUALIZE(function()
 			local ListInner = Library:Create("Frame", {
 				BackgroundColor3 = Library.MainColor,
 				BorderColor3 = Library.OutlineColor,
-				BorderMode = Enum.BorderMode.Inset,
 				BorderSizePixel = 0,
 				Size = UDim2.new(1, 0, 1, 0),
 				ZIndex = 21,
 				Parent = ListOuter,
 			})
+
+			Library:ApplyCorner(ListInner, UDim.new(0, 9))
 
 			Library:AddToRegistry(ListInner, {
 				BackgroundColor3 = "MainColor",
@@ -4736,7 +4785,7 @@ return LPH_NO_VIRTUALIZE(function()
 
 		local Outer = Library:Create("Frame", {
 			AnchorPoint = Config.AnchorPoint,
-			BackgroundColor3 = Color3.new(0, 0, 0),
+			BackgroundColor3 = Library.BackgroundColor,
 			BorderSizePixel = 0,
 			Position = Config.Position,
 			Size = Config.Size,
@@ -4746,44 +4795,49 @@ return LPH_NO_VIRTUALIZE(function()
 		})
 
 		Library:MakeDraggable(Outer, 25)
+		Library:ApplyCorner(Outer, Library.SurfaceCornerRadius)
 
 		local Inner = Library:Create("Frame", {
 			BackgroundColor3 = Library.MainColor,
-			BorderColor3 = Library.AccentColor,
-			BorderMode = Enum.BorderMode.Inset,
+			BorderColor3 = Library.OutlineColor,
 			Position = UDim2.new(0, 1, 0, 1),
 			Size = UDim2.new(1, -2, 1, -2),
 			ZIndex = 1,
 			Parent = Outer,
 		})
 
+		Library:ApplyCorner(Inner, Library.SurfaceCornerRadius)
+
 		Library:AddToRegistry(Inner, {
 			BackgroundColor3 = "MainColor",
-			BorderColor3 = "AccentColor",
+			BorderColor3 = "OutlineColor",
 		})
 
 		local WindowLabel = Library:CreateLabel({
-			Position = UDim2.new(0, 7, 0, 0),
-			Size = UDim2.new(0, 0, 0, 25),
+			Position = UDim2.new(0, 16, 0, 12),
+			Size = UDim2.new(1, -32, 0, 24),
 			Text = Config.Title or "",
-			TextColor3 = Library.AccentColor,
+			TextColor3 = Library.FontColor,
+			TextSize = 18,
 			TextXAlignment = Enum.TextXAlignment.Left,
 			ZIndex = 1,
 			Parent = Inner,
 		})
 
 		Library:AddToRegistry(WindowLabel, {
-			TextColor3 = "AccentColor",
+			TextColor3 = "FontColor",
 		})
 
 		local MainSectionOuter = Library:Create("Frame", {
 			BackgroundColor3 = Library.BackgroundColor,
 			BorderColor3 = Library.OutlineColor,
-			Position = UDim2.new(0, 8, 0, 25),
-			Size = UDim2.new(1, -16, 1, -33),
+			Position = UDim2.new(0, 12, 0, 48),
+			Size = UDim2.new(1, -24, 1, -60),
 			ZIndex = 1,
 			Parent = Inner,
 		})
+
+		Library:ApplyCorner(MainSectionOuter, Library.SurfaceCornerRadius)
 
 		Library:AddToRegistry(MainSectionOuter, {
 			BackgroundColor3 = "BackgroundColor",
@@ -4792,13 +4846,14 @@ return LPH_NO_VIRTUALIZE(function()
 
 		local MainSectionInner = Library:Create("Frame", {
 			BackgroundColor3 = Library.BackgroundColor,
-			BorderColor3 = Color3.new(0, 0, 0),
-			BorderMode = Enum.BorderMode.Inset,
+			BorderColor3 = Library.OutlineColor,
 			Position = UDim2.new(0, 0, 0, 0),
 			Size = UDim2.new(1, 0, 1, 0),
 			ZIndex = 1,
 			Parent = MainSectionOuter,
 		})
+
+		Library:ApplyCorner(MainSectionInner, Library.SurfaceCornerRadius)
 
 		Library:AddToRegistry(MainSectionInner, {
 			BackgroundColor3 = "BackgroundColor",
@@ -4806,8 +4861,8 @@ return LPH_NO_VIRTUALIZE(function()
 
 		local TabArea = Library:Create("Frame", {
 			BackgroundTransparency = 1,
-			Position = UDim2.new(0, 8, 0, 8),
-			Size = UDim2.new(1, -16, 0, 21),
+			Position = UDim2.new(0, 14, 0, 14),
+			Size = UDim2.new(1, -28, 0, 34),
 			ZIndex = 1,
 			Parent = MainSectionInner,
 		})
@@ -4820,17 +4875,12 @@ return LPH_NO_VIRTUALIZE(function()
 		})
 
 		local TabContainer = Library:Create("Frame", {
-			BackgroundColor3 = Library.MainColor,
-			BorderColor3 = Library.OutlineColor,
-			Position = UDim2.new(0, 8, 0, 30),
-			Size = UDim2.new(1, -16, 1, -38),
+			BackgroundTransparency = 1,
+			BorderSizePixel = 0,
+			Position = UDim2.new(0, 0, 0, 54),
+			Size = UDim2.new(1, 0, 1, -54),
 			ZIndex = 2,
 			Parent = MainSectionInner,
-		})
-
-		Library:AddToRegistry(TabContainer, {
-			BackgroundColor3 = "MainColor",
-			BorderColor3 = "OutlineColor",
 		})
 
 		function Window:SetWindowTitle(Title)
@@ -4853,10 +4903,12 @@ return LPH_NO_VIRTUALIZE(function()
 			local TabButton = Library:Create("Frame", {
 				BackgroundColor3 = Library.BackgroundColor,
 				BorderColor3 = Library.OutlineColor,
-				Size = UDim2.new(0, TabButtonWidth + 8 + 4, 1, 0),
+				Size = UDim2.new(0, TabButtonWidth + 28, 1, 0),
 				ZIndex = 1,
 				Parent = TabArea,
 			})
+
+			Library:ApplyCorner(TabButton, Library.PillCornerRadius)
 
 			Library:AddToRegistry(TabButton, {
 				BackgroundColor3 = "BackgroundColor",
@@ -4865,8 +4917,9 @@ return LPH_NO_VIRTUALIZE(function()
 
 			local TabButtonLabel = Library:CreateLabel({
 				Position = UDim2.new(0, 0, 0, 0),
-				Size = UDim2.new(1, 0, 1, -1),
+				Size = UDim2.new(1, 0, 1, 0),
 				Text = Name,
+				TextSize = 15,
 				ZIndex = 1,
 				Parent = TabButton,
 			})
@@ -4898,7 +4951,7 @@ return LPH_NO_VIRTUALIZE(function()
 			local LeftSide = Library:Create("ScrollingFrame", {
 				BackgroundTransparency = 1,
 				BorderSizePixel = 0,
-				Position = UDim2.new(0, 8 - 1, 0, 8 - 1),
+				Position = UDim2.new(0, 7, 0, 7),
 				Size = UDim2.new(0.5, -12 + 2, 0, 507 + 2),
 				CanvasSize = UDim2.new(0, 0, 0, 0),
 				BottomImage = "",
@@ -4911,7 +4964,7 @@ return LPH_NO_VIRTUALIZE(function()
 			local RightSide = Library:Create("ScrollingFrame", {
 				BackgroundTransparency = 1,
 				BorderSizePixel = 0,
-				Position = UDim2.new(0.5, 4 + 1, 0, 8 - 1),
+				Position = UDim2.new(0.5, 5, 0, 7),
 				Size = UDim2.new(0.5, -12 + 2, 0, 507 + 2),
 				CanvasSize = UDim2.new(0, 0, 0, 0),
 				BottomImage = "",
@@ -4970,37 +5023,40 @@ return LPH_NO_VIRTUALIZE(function()
 				local Groupbox = { Name = Info.Name }
 
 				local BoxOuter = Library:Create("Frame", {
-					BackgroundColor3 = Library.BackgroundColor,
+					BackgroundColor3 = Library.MainColor,
 					BorderColor3 = Library.OutlineColor,
-					BorderMode = Enum.BorderMode.Inset,
 					Size = UDim2.new(1, 0, 0, 507 + 2),
 					ZIndex = 2,
 					Parent = Info.Side == 1 and LeftSide or RightSide,
 				})
 
+				Library:ApplyCorner(BoxOuter, Library.SurfaceCornerRadius)
+
 				Library:AddToRegistry(BoxOuter, {
-					BackgroundColor3 = "BackgroundColor",
+					BackgroundColor3 = "MainColor",
 					BorderColor3 = "OutlineColor",
 				})
 
 				local BoxInner = Library:Create("Frame", {
-					BackgroundColor3 = Library.BackgroundColor,
-					BorderColor3 = Color3.new(0, 0, 0),
-					-- BorderMode = Enum.BorderMode.Inset;
+					BackgroundColor3 = Library.MainColor,
+					BorderSizePixel = 0,
 					Size = UDim2.new(1, -2, 1, -2),
 					Position = UDim2.new(0, 1, 0, 1),
 					ZIndex = 4,
 					Parent = BoxOuter,
 				})
 
+				Library:ApplyCorner(BoxInner, UDim.new(0, 16))
+
 				Library:AddToRegistry(BoxInner, {
-					BackgroundColor3 = "BackgroundColor",
+					BackgroundColor3 = "MainColor",
 				})
 
 				local Highlight = Library:Create("Frame", {
 					BackgroundColor3 = Library.AccentColor,
 					BorderSizePixel = 0,
 					Size = UDim2.new(1, 0, 0, 2),
+					BackgroundTransparency = 0.9,
 					ZIndex = 5,
 					Parent = BoxInner,
 				})
@@ -5011,7 +5067,7 @@ return LPH_NO_VIRTUALIZE(function()
 
 				local GroupboxLabel = Library:CreateLabel({
 					Size = UDim2.new(1, 0, 0, 18),
-					Position = UDim2.new(0, 4, 0, 2),
+					Position = UDim2.new(0, 12, 0, 10),
 					TextSize = 14,
 					Text = Info.Name,
 					TextXAlignment = Enum.TextXAlignment.Left,
@@ -5021,8 +5077,8 @@ return LPH_NO_VIRTUALIZE(function()
 
 				local Container = Library:Create("Frame", {
 					BackgroundTransparency = 1,
-					Position = UDim2.new(0, 4, 0, 20),
-					Size = UDim2.new(1, -4, 1, -20),
+					Position = UDim2.new(0, 12, 0, 34),
+					Size = UDim2.new(1, -24, 1, -38),
 					ZIndex = 1,
 					Parent = BoxInner,
 				})
@@ -5079,37 +5135,40 @@ return LPH_NO_VIRTUALIZE(function()
 				}
 
 				local BoxOuter = Library:Create("Frame", {
-					BackgroundColor3 = Library.BackgroundColor,
+					BackgroundColor3 = Library.MainColor,
 					BorderColor3 = Library.OutlineColor,
-					BorderMode = Enum.BorderMode.Inset,
 					Size = UDim2.new(1, 0, 0, 0),
 					ZIndex = 2,
 					Parent = Info.Side == 1 and LeftSide or RightSide,
 				})
 
+				Library:ApplyCorner(BoxOuter, Library.SurfaceCornerRadius)
+
 				Library:AddToRegistry(BoxOuter, {
-					BackgroundColor3 = "BackgroundColor",
+					BackgroundColor3 = "MainColor",
 					BorderColor3 = "OutlineColor",
 				})
 
 				local BoxInner = Library:Create("Frame", {
-					BackgroundColor3 = Library.BackgroundColor,
-					BorderColor3 = Color3.new(0, 0, 0),
-					-- BorderMode = Enum.BorderMode.Inset;
+					BackgroundColor3 = Library.MainColor,
+					BorderSizePixel = 0,
 					Size = UDim2.new(1, -2, 1, -2),
 					Position = UDim2.new(0, 1, 0, 1),
 					ZIndex = 4,
 					Parent = BoxOuter,
 				})
 
+				Library:ApplyCorner(BoxInner, UDim.new(0, 16))
+
 				Library:AddToRegistry(BoxInner, {
-					BackgroundColor3 = "BackgroundColor",
+					BackgroundColor3 = "MainColor",
 				})
 
 				local Highlight = Library:Create("Frame", {
 					BackgroundColor3 = Library.AccentColor,
 					BorderSizePixel = 0,
 					Size = UDim2.new(1, 0, 0, 2),
+					BackgroundTransparency = 0.9,
 					ZIndex = 10,
 					Parent = BoxInner,
 				})
@@ -5138,11 +5197,13 @@ return LPH_NO_VIRTUALIZE(function()
 
 					local Button = Library:Create("Frame", {
 						BackgroundColor3 = Library.MainColor,
-						BorderColor3 = Color3.new(0, 0, 0),
+						BorderColor3 = Library.OutlineColor,
 						Size = UDim2.new(0.5, 0, 1, 0),
 						ZIndex = 6,
 						Parent = TabboxButtons,
 					})
+
+					Library:ApplyCorner(Button, Library.PillCornerRadius)
 
 					Library:AddToRegistry(Button, {
 						BackgroundColor3 = "MainColor",
