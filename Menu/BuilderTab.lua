@@ -25,6 +25,9 @@ local ModuleManager = require("Game/Timings/ModuleManager")
 ---@module Features.Game.AnimationVisualizer
 local AnimationVisualizer = require("Features/Game/AnimationVisualizer")
 
+---@module Features.Game.AnimationLogger
+local AnimationLogger = require("Features/Game/AnimationLogger")
+
 ---@module GUI.Library
 local Library = require("GUI/Library")
 
@@ -218,6 +221,78 @@ function BuilderTab.initLoggerSection(groupbox)
 	end)
 end
 
+---Initialize animation capture section.
+---@param groupbox table
+function BuilderTab.initCaptureSection(groupbox)
+	groupbox:AddToggle("EnableAnimationCapture", {
+		Text = "Enable Animation Capture",
+		Default = false,
+		Tooltip = "When enabled, animations played by nearby entities are captured for timing generation.",
+	})
+
+	local capturedList = groupbox:AddDropdown("CapturedAnimationList", {
+		Text = "Captured Animations",
+		Values = {},
+		AllowNull = true,
+	})
+
+	local timingNameInput = groupbox:AddInput("GeneratedTimingName", {
+		Text = "Timing Name (optional)",
+		Tooltip = "Leave empty to auto-generate a name from entity + animation ID.",
+	})
+
+	groupbox:AddButton("Refresh Captured List", function()
+		capturedList:SetValues(AnimationLogger.capturedList())
+		capturedList:SetValue(nil)
+		capturedList:Display()
+	end)
+
+	groupbox:AddButton("Generate Timing From Selected", function()
+		local selected = capturedList.Value
+		if not selected then
+			return Library:Notify("Select a captured animation first.")
+		end
+
+		-- Extract the animation ID from the display string "EntityName (rbxassetid://123)".
+		local aid = selected:match("%((.+)%)$")
+		if not aid then
+			return Library:Notify("Could not parse animation ID from selection.")
+		end
+
+		local name = timingNameInput and timingNameInput.Value or nil
+		local success, result = AnimationLogger.generateTiming(aid, name)
+
+		if success then
+			Library:Notify(string.format("Created timing '%s'.", result))
+			BuilderTab.refresh()
+		else
+			Library:Notify(result)
+		end
+	end)
+
+	groupbox
+		:AddButton({
+			Text = "Generate All Captured",
+			DoubleClick = true,
+			Func = function()
+				local s, f = AnimationLogger.generateAll()
+				Library:Notify(string.format("Generated %d timings (%d skipped/failed).", s, f))
+				BuilderTab.refresh()
+			end,
+		})
+		:AddButton({
+			Text = "Clear Captured",
+			DoubleClick = true,
+			Func = function()
+				AnimationLogger.clearCaptured()
+				capturedList:SetValues({})
+				capturedList:SetValue(nil)
+				capturedList:Display()
+				Library:Notify("Cleared all captured animations.")
+			end,
+		})
+end
+
 ---Initialize Module Manager section.
 ---@param groupbox table
 function BuilderTab.initModuleManagerSection(groupbox)
@@ -250,6 +325,7 @@ function BuilderTab.init(window)
 	BuilderTab.initMergeManagerSection(tab:AddDynamicGroupbox("Merge Manager"))
 	BuilderTab.initModuleManagerSection(tab:AddDynamicGroupbox("Module Manager"))
 	BuilderTab.initLoggerSection(tab:AddDynamicGroupbox("Logger"))
+	BuilderTab.initCaptureSection(tab:AddDynamicGroupbox("Animation Capture"))
 
 	-- Create builder sections.
 	BuilderTab.pbs = PartBuilderSection.new("Part", tab:AddDynamicTabbox(), SaveManager.ps, PartTiming.new())
