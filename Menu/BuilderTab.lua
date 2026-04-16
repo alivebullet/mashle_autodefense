@@ -224,6 +224,8 @@ end
 ---Initialize animation capture section.
 ---@param groupbox table
 function BuilderTab.initCaptureSection(groupbox)
+	Library:Notify("Animation Capture section loaded.")
+
 	groupbox:AddToggle("EnableAnimationCapture", {
 		Text = "Enable Animation Capture",
 		Default = false,
