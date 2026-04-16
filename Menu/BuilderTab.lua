@@ -271,6 +271,26 @@ function BuilderTab.initCaptureSection(groupbox)
 		Tooltip = "Leave empty to auto-generate a name from entity + animation ID.",
 	})
 
+	local autoSaveConfigInput = groupbox:AddInput("GeneratedTimingAutoSaveConfigName", {
+		Text = "Auto Save Config Name",
+		Tooltip = "Optional: if set, generated timings are immediately written to this config file.",
+		Placeholder = "example: rogue_autogen",
+	})
+
+	local function autoSaveGeneratedTimings()
+		local configName = autoSaveConfigInput and autoSaveConfigInput.Value
+		if not configName or #configName <= 0 then
+			return
+		end
+
+		local code = SaveManager.write(configName)
+		if code == 0 then
+			Library:Notify(string.format("Auto-saved timings to '%s'.", configName))
+		else
+			Library:Notify(string.format("Failed to auto-save timings to '%s'.", configName))
+		end
+	end
+
 	groupbox:AddButton("Refresh Captured List", function()
 		capturedList:SetValues(AnimationLogger.capturedList())
 		capturedList:SetValue(nil)
@@ -294,6 +314,7 @@ function BuilderTab.initCaptureSection(groupbox)
 
 		if success then
 			Library:Notify(string.format("Created timing '%s'.", result))
+			autoSaveGeneratedTimings()
 			BuilderTab.refresh()
 		else
 			Library:Notify(result)
@@ -307,6 +328,11 @@ function BuilderTab.initCaptureSection(groupbox)
 			Func = function()
 				local s, f = AnimationLogger.generateAll()
 				Library:Notify(string.format("Generated %d timings (%d skipped/failed).", s, f))
+
+				if s > 0 then
+					autoSaveGeneratedTimings()
+				end
+
 				BuilderTab.refresh()
 			end,
 		})

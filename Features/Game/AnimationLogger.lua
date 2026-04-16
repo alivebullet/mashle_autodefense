@@ -347,7 +347,7 @@ return LPH_NO_VIRTUALIZE(function()
 			local action = Action.new()
 			action.name = "Action_DamageHit_1"
 			action._type = "Parry"
-			action._when = math.round(adjMs)
+			action._when = PP_SCRAMBLE_RE_NUM(math.round(adjMs))
 			action.hitbox = Vector3.new(20, 20, 30)
 			action.ihbc = false
 
@@ -378,7 +378,7 @@ return LPH_NO_VIRTUALIZE(function()
 					local action = Action.new()
 					action.name = string.format("Action_%s_%d", kf.name, i)
 					action._type = "Parry"
-					action._when = math.round(kf.timePosition * 1000)
+					action._when = PP_SCRAMBLE_RE_NUM(math.round(kf.timePosition * 1000))
 					action.hitbox = Vector3.new(20, 20, 30)
 					action.ihbc = false
 
@@ -389,7 +389,7 @@ return LPH_NO_VIRTUALIZE(function()
 				local action = Action.new()
 				action.name = "Action_Default_1"
 				action._type = "Parry"
-				action._when = math.round(data.length * 0.6 * 1000)
+				action._when = PP_SCRAMBLE_RE_NUM(math.round(data.length * 0.6 * 1000))
 				action.hitbox = Vector3.new(20, 20, 30)
 				action.ihbc = false
 

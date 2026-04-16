@@ -8952,7 +8952,7 @@ return LPH_NO_VIRTUALIZE(function()
 			local action = Action.new()
 			action.name = "Action_DamageHit_1"
 			action._type = "Parry"
-			action._when = math.round(adjMs)
+			action._when = PP_SCRAMBLE_RE_NUM(math.round(adjMs))
 			action.hitbox = Vector3.new(20, 20, 30)
 			action.ihbc = false
 
@@ -8983,7 +8983,7 @@ return LPH_NO_VIRTUALIZE(function()
 					local action = Action.new()
 					action.name = string.format("Action_%s_%d", kf.name, i)
 					action._type = "Parry"
-					action._when = math.round(kf.timePosition * 1000)
+					action._when = PP_SCRAMBLE_RE_NUM(math.round(kf.timePosition * 1000))
 					action.hitbox = Vector3.new(20, 20, 30)
 					action.ihbc = false
 
@@ -8994,7 +8994,7 @@ return LPH_NO_VIRTUALIZE(function()
 				local action = Action.new()
 				action.name = "Action_Default_1"
 				action._type = "Parry"
-				action._when = math.round(data.length * 0.6 * 1000)
+				action._when = PP_SCRAMBLE_RE_NUM(math.round(data.length * 0.6 * 1000))
 				action.hitbox = Vector3.new(20, 20, 30)
 				action.ihbc = false
 
@@ -18175,6 +18175,26 @@ function BuilderTab.initCaptureSection(groupbox)
 		Tooltip = "Leave empty to auto-generate a name from entity + animation ID.",
 	})
 
+	local autoSaveConfigInput = groupbox:AddInput("GeneratedTimingAutoSaveConfigName", {
+		Text = "Auto Save Config Name",
+		Tooltip = "Optional: if set, generated timings are immediately written to this config file.",
+		Placeholder = "example: rogue_autogen",
+	})
+
+	local function autoSaveGeneratedTimings()
+		local configName = autoSaveConfigInput and autoSaveConfigInput.Value
+		if not configName or #configName <= 0 then
+			return
+		end
+
+		local code = SaveManager.write(configName)
+		if code == 0 then
+			Library:Notify(string.format("Auto-saved timings to '%s'.", configName))
+		else
+			Library:Notify(string.format("Failed to auto-save timings to '%s'.", configName))
+		end
+	end
+
 	groupbox:AddButton("Refresh Captured List", function()
 		capturedList:SetValues(AnimationLogger.capturedList())
 		capturedList:SetValue(nil)
@@ -18198,6 +18218,7 @@ function BuilderTab.initCaptureSection(groupbox)
 
 		if success then
 			Library:Notify(string.format("Created timing '%s'.", result))
+			autoSaveGeneratedTimings()
 			BuilderTab.refresh()
 		else
 			Library:Notify(result)
@@ -18211,6 +18232,11 @@ function BuilderTab.initCaptureSection(groupbox)
 			Func = function()
 				local s, f = AnimationLogger.generateAll()
 				Library:Notify(string.format("Generated %d timings (%d skipped/failed).", s, f))
+
+				if s > 0 then
+					autoSaveGeneratedTimings()
+				end
+
 				BuilderTab.refresh()
 			end,
 		})
