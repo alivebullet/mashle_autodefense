@@ -5519,6 +5519,49 @@ local runService = game:GetService("RunService")
 -- Maids.
 local saveMaid = Maid.new()
 
+---Try loading internal timings from workspace timing files.
+---@param animationContainer TimingContainer
+---@param partContainer TimingContainer
+---@param soundContainer TimingContainer
+---@return boolean
+local function loadWorkspaceInternalTimings(animationContainer, partContainer, soundContainer)
+	local candidates = { "Timings/truth.txt", "Timings/base.txt" }
+
+	for _, path in next, candidates do
+		if not isfile or not isfile(path) then
+			continue
+		end
+
+		local readOk, readResult = pcall(readfile, path)
+		if not readOk or not readResult then
+			Logger.warn("Failed to read workspace timing file '%s': %s", path, tostring(readResult))
+			continue
+		end
+
+		local decodeOk, decodeResult = pcall(Deserializer.unmarshal_one, String.tba(readResult))
+		if not decodeOk or typeof(decodeResult) ~= "table" then
+			Logger.warn("Failed to deserialize workspace timing file '%s': %s", path, tostring(decodeResult))
+			continue
+		end
+
+		local loadOk, loadErr = pcall(function()
+			animationContainer:load(decodeResult.animation or {})
+			partContainer:load(decodeResult.part or {})
+			soundContainer:load(decodeResult.sound or {})
+		end)
+
+		if not loadOk then
+			Logger.warn("Failed to load workspace timing file '%s': %s", path, tostring(loadErr))
+			continue
+		end
+
+		Logger.notify("Internal timing seed loaded from workspace file '%s'.", path)
+		return true
+	end
+
+	return false
+end
+
 ---Get save files list.
 ---@return table
 function SaveManager.list()
@@ -5771,9 +5814,12 @@ function SaveManager.init()
 	local internalPartContainer = TimingContainer.new(PartTiming.new())
 	local internalSoundContainer = TimingContainer.new(SoundTiming.new())
 
-	internalAnimationContainer:load({})
-	internalPartContainer:load({})
-	internalSoundContainer:load({})
+	-- Seed from workspace timing files when available; otherwise keep empty internal timings.
+	if not loadWorkspaceInternalTimings(internalAnimationContainer, internalPartContainer, internalSoundContainer) then
+		internalAnimationContainer:load({})
+		internalPartContainer:load({})
+		internalSoundContainer:load({})
+	end
 
 	-- Count up internal timings.
 	local internalCount = internalAnimationContainer:count()
