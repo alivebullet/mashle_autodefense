@@ -13794,7 +13794,7 @@ return LPH_NO_VIRTUALIZE(function()
 	textLabel.FontFace = Font.new("rbxasset://fonts/families/RobotoMono.json")
 	textLabel.TextColor3 = Library.FontColor
 	textLabel.BorderColor3 = Color3.new()
-	textLabel.Text = "Unknown Error"
+	textLabel.Text = "Waiting For Animation ID"
 	textLabel.BackgroundColor3 = Color3.new(1, 1, 1)
 	textLabel.BorderSizePixel = 0
 	textLabel.BackgroundTransparency = 1
@@ -13855,6 +13855,7 @@ return LPH_NO_VIRTUALIZE(function()
 	local currentTrack = nil
 	local isPaused = false
 	local timeElapsed = 0.0
+	local isInitialized = false
 
 	---Map slider value.
 	---@param value number
@@ -14145,6 +14146,15 @@ return LPH_NO_VIRTUALIZE(function()
 	---Set the visibility of the AnimationVisualizer.
 	---@param state boolean
 	function AnimationVisualizer.visible(state)
+		if state and not isInitialized then
+			local ok, err = pcall(AnimationVisualizer.init)
+
+			if not ok then
+				screenGui.Enabled = true
+				return AnimationVisualizer.message("Visualizer Init Failed: " .. tostring(err))
+			end
+		end
+
 		screenGui.Enabled = state
 	end
 
@@ -14158,6 +14168,10 @@ return LPH_NO_VIRTUALIZE(function()
 
 	---Initialize AnimationVisualizer module.
 	function AnimationVisualizer.init()
+		if isInitialized then
+			return
+		end
+
 		-- Initialize GUI.
 		screenGui.Name = "AnimationVisualizer"
 		screenGui.Enabled = false
@@ -14286,11 +14300,13 @@ return LPH_NO_VIRTUALIZE(function()
 
 		-- Add outer frame to library.
 		Library.AnimationVisualizerFrame = outer
+		isInitialized = true
 	end
 
 	---Detach AnimationVisualizer module.
 	function AnimationVisualizer.detach()
 		visualizerMaid:clean()
+		isInitialized = false
 	end
 
 	-- Return AnimationVisualizer module.
