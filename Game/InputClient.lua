@@ -4,6 +4,7 @@ local InputClient = {}
 -- Services.
 local players = game:GetService("Players")
 local userInputService = game:GetService("UserInputService")
+local replicatedStorage = game:GetService("ReplicatedStorage")
 
 ---@module Utility.Configuration
 local Configuration = require("Utility/Configuration")
@@ -104,6 +105,31 @@ function InputClient.dash()
 	end
 
 	dash:FireServer(v348, nil)
+end
+
+---Parry. Fires the dedicated Misc/Parry remote in ReplicatedStorage.
+---This is a distinct route from block cycling (deflect) and should be used
+---when a parry window is explicitly intended.
+function InputClient.parry()
+	local remotes = replicatedStorage:FindFirstChild("Remotes")
+	local requestModule = remotes and remotes:FindFirstChild("RequestModule")
+	if not requestModule then
+		return
+	end
+
+	requestModule:FireServer("Misc", "Parry")
+end
+
+---Apparat. Fires the Misc/Evasive remote — a last-resort combo breaker that
+---turns the local player invisible and untargetable.
+function InputClient.apparat()
+	local remotes = replicatedStorage:FindFirstChild("Remotes")
+	local requestModule = remotes and remotes:FindFirstChild("RequestModule")
+	if not requestModule then
+		return
+	end
+
+	requestModule:FireServer("Misc", "Evasive")
 end
 
 -- Return InputClient module.

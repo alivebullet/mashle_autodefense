@@ -8628,6 +8628,9 @@ return LPH_NO_VIRTUALIZE(function()
 	---@module Utility.Logger
 	local Logger = require("Utility/Logger")
 
+	---@module Game.DynamicTiming
+	local DynamicTiming = require("Game/DynamicTiming")
+
 	-- Services.
 	local players = game:GetService("Players")
 
@@ -8641,6 +8644,11 @@ return LPH_NO_VIRTUALIZE(function()
 	-- Captured animation data for auto-generating timings.
 	-- Key: animation ID, Value: { id, entityName, length, speed, keyframes = { { name, timePosition } }, capturedAt }
 	local capturedAnimations = {}
+
+	-- Animations currently playing on nearby entities (for damage-hit capture).
+	-- Key: animation ID, Value: { track = AnimationTrack, entity = Model }
+	-- Note: only the most recent track per aid is stored.
+	local activePlayingTracks = {}
 
 	---Get distance from local player to an entity.
 	---@param entity Model
@@ -8737,6 +8745,16 @@ return LPH_NO_VIRTUALIZE(function()
 						capturedAt = os.clock(),
 					}
 				end
+
+				-- Register as an active playing track so damage-hit capture can snapshot it.
+				activePlayingTracks[aid] = { track = track, entity = entity }
+
+				-- Deregister when the track stops.
+				animMaid:add(track.Stopped:Connect(function()
+					if activePlayingTracks[aid] and activePlayingTracks[aid].track == track then
+						activePlayingTracks[aid] = nil
+					end
+				end))
 			end
 
 			-- Listen for keyframes on this track.
@@ -8898,45 +8916,66 @@ return LPH_NO_VIRTUALIZE(function()
 		timing.pfh = true
 		timing.pfht = 0.15
 
-		-- Create actions from keyframes.
-		local hitKeyframes = {}
-		for _, kf in next, data.keyframes do
-			local kfLower = string.lower(kf.name)
-			if kfLower:find("hit") or kfLower:find("damage") or kfLower:find("attack") or kfLower:find("impact") then
-				table.insert(hitKeyframes, kf)
+		-- ── Determine the best raw _when value ──────────────────────────────
+		-- Priority: damage-hit capture > named keyframe > all keyframes > length fallback.
+
+		if data.damageHitTime then
+			-- Damage-hit capture: adjust for projectile travel time via DynamicTiming.
+			local rawMs = data.damageHitTime.timePos * 1000
+			local dist = data.damageHitTime.distance
+			local adjMs = DynamicTiming.adjust(rawMs, dist, aid, nil)
+
+			local action = Action.new()
+			action.name = "Action_DamageHit_1"
+			action._type = "Parry"
+			action._when = math.round(adjMs)
+			action.hitbox = Vector3.new(20, 20, 30)
+			action.ihbc = false
+
+			timing.actions:push(action)
+
+			Logger.notify(
+				"[DynamicTiming] '%s': raw=%.0fms dist=%.1fst adj=%.0fms",
+				name, rawMs, dist, adjMs
+			)
+		else
+			-- Fallback: keyframe-based generation (original behaviour).
+			local hitKeyframes = {}
+			for _, kf in next, data.keyframes do
+				local kfLower = string.lower(kf.name)
+				if kfLower:find("hit") or kfLower:find("damage") or kfLower:find("attack") or kfLower:find("impact") then
+					table.insert(hitKeyframes, kf)
+				end
 			end
-		end
 
-		-- If no hit keyframes found, use all keyframes as potential action points.
-		local actionKeyframes = #hitKeyframes > 0 and hitKeyframes or data.keyframes
+			local actionKeyframes = #hitKeyframes > 0 and hitKeyframes or data.keyframes
 
-		if #actionKeyframes > 0 then
-			-- Sort by time position.
-			table.sort(actionKeyframes, function(a, b)
-				return a.timePosition < b.timePosition
-			end)
+			if #actionKeyframes > 0 then
+				table.sort(actionKeyframes, function(a, b)
+					return a.timePosition < b.timePosition
+				end)
 
-			for i, kf in next, actionKeyframes do
+				for i, kf in next, actionKeyframes do
+					local action = Action.new()
+					action.name = string.format("Action_%s_%d", kf.name, i)
+					action._type = "Parry"
+					action._when = math.round(kf.timePosition * 1000)
+					action.hitbox = Vector3.new(20, 20, 30)
+					action.ihbc = false
+
+					timing.actions:push(action)
+				end
+			else
+				-- No keyframes at all — use 60% of animation length.
 				local action = Action.new()
-				action.name = string.format("Action_%s_%d", kf.name, i)
+				action.name = "Action_Default_1"
 				action._type = "Parry"
-				action._when = math.round(kf.timePosition * 1000) -- Convert seconds to milliseconds.
+				action._when = math.round(data.length * 0.6 * 1000)
 				action.hitbox = Vector3.new(20, 20, 30)
 				action.ihbc = false
 
 				timing.actions:push(action)
 			end
-		else
-			-- No keyframes captured - create a single parry action at a reasonable time.
-			-- Use 60% of the animation length as the default action time.
-			local action = Action.new()
-			action.name = "Action_Default_1"
-			action._type = "Parry"
-			action._when = math.round(data.length * 0.6 * 1000)
-			action.hitbox = Vector3.new(20, 20, 30)
-			action.ihbc = false
-
-			timing.actions:push(action)
 		end
 
 		-- Push into SaveManager config.
@@ -8971,10 +9010,77 @@ return LPH_NO_VIRTUALIZE(function()
 		return successCount, failCount
 	end
 
+	---Hook the local player's Humanoid HealthChanged to capture damage-hit timestamps.
+	---Called once per character spawn so it always targets the current Humanoid.
+	---@param character Model
+	local function hookLocalDamage(character)
+		local humanoid = character:FindFirstChildWhichIsA("Humanoid")
+		if not humanoid then
+			return
+		end
+
+		local lastHealth = humanoid.Health
+
+		loggerMaid:add(humanoid.HealthChanged:Connect(function(newHealth)
+			-- Only care about damage (health decrease).
+			if newHealth >= lastHealth then
+				lastHealth = newHealth
+				return
+			end
+
+			lastHealth = newHealth
+
+			-- Snapshot every currently-active animation's time position and distance.
+			-- This becomes the authoritative 'when' for auto-generated timings.
+			if not Configuration.expectToggleValue("EnableAnimationCapture") then
+				return
+			end
+
+			for aid, entry in next, activePlayingTracks do
+				if not capturedAnimations[aid] then
+					continue
+				end
+
+				local timePos = entry.track.TimePosition
+				local dist = getDistanceTo(entry.entity)
+
+				-- Only update if this snapshot is more recent (later in the animation).
+				local existing = capturedAnimations[aid].damageHitTime
+				if not existing or timePos > existing.timePos then
+					capturedAnimations[aid].damageHitTime = {
+						timePos = timePos,
+						distance = dist,
+					}
+
+					Library:AddTelemetryEntry(
+						"[DamageCap] '%s' hit at tp=%.3fs dist=%.1fst",
+						capturedAnimations[aid].entityName,
+						timePos,
+						dist
+					)
+				end
+			end
+		end))
+	end
+
 	---Initialize AnimationLogger module.
 	function AnimationLogger.init()
 		if isInitialized then
 			return
+		end
+
+		-- Hook local player damage on current and future characters.
+		local localPlayer = players.LocalPlayer
+		if localPlayer then
+			if localPlayer.Character then
+				hookLocalDamage(localPlayer.Character)
+			end
+
+			loggerMaid:add(localPlayer.CharacterAdded:Connect(function(char)
+				task.defer(function()
+					hookLocalDamage(char)
+				end)
+			end))
 		end
 
 		-- Track existing players.
@@ -9012,6 +9118,111 @@ return LPH_NO_VIRTUALIZE(function()
 	-- Return AnimationLogger module.
 	return AnimationLogger
 end)()
+
+end)
+__bundle_register("Game/DynamicTiming", function(require, _LOADED, __bundle_register, __bundle_modules)
+-- DynamicTiming module.
+-- Calculates a latency- and distance-compensated action trigger time from raw
+-- observed data (keyframe timestamp or damage-hit timestamp).
+--
+-- Architecture note:
+--   The AnimatorDefender already compensates for ping via its `offset` field
+--   (set to `rdelay()` at init).  DynamicTiming's job is orthogonal: it
+--   subtracts projectile travel-time from the raw `_when` so that stored
+--   timings fire BEFORE the projectile arrives, not at impact.
+--
+--   For melee attacks the travel speed is effectively instant, so the
+--   dictionary value should be a large number (e.g. 999) to make
+--   travelTimeMs negligible.
+--
+-- Usage (inside AnimationLogger.generateTiming):
+--   local adjMs = DynamicTiming.adjust(rawWhenMs, distanceStuds, aid, nil)
+--   action._when = adjMs
+local DynamicTiming = {}
+
+-- Default fallback attack speed (studs / second).
+-- Applies when no dictionary entry exists and no projectile part is supplied.
+DynamicTiming.defaultSpeed = 40
+
+-- Per-animation-ID attack speed overrides.  Keys are full rbxassetid:// strings.
+-- Melee attacks should use a very large value so travel time is ~0.
+-- Projectiles should use their actual stud/s travel speed.
+local attackSpeedDictionary = {}
+
+---Resolve the attack speed for a given animation ID and optional projectile part.
+---@param aid string Full animation asset ID (e.g. "rbxassetid://123456").
+---@param projectilePart BasePart? If the attack spawns a moving part, pass it here.
+---@return number studs per second
+local function resolveSpeed(aid, projectilePart)
+	-- 1. Try live physics velocity from the projectile part.
+	if projectilePart and projectilePart:IsA("BasePart") then
+		local speed = projectilePart.AssemblyLinearVelocity.Magnitude
+		if speed > 0.1 then
+			return speed
+		end
+		-- Velocity was zero (anchored / not yet moving). Fall through.
+	end
+
+	-- 2. Dictionary lookup.
+	local dictSpeed = attackSpeedDictionary[aid]
+	if dictSpeed and dictSpeed > 0 then
+		return dictSpeed
+	end
+
+	-- 3. Global default.
+	return DynamicTiming.defaultSpeed
+end
+
+---Adjust a raw observed `_when` value (in milliseconds) to account for
+---projectile travel time.
+---
+---Formula:
+---  adjustedMs = rawWhenMs - (distanceStuds / attackSpeed) * 1000
+---
+---A negative result is clamped to 0 (fire as soon as animation plays).
+---
+---@param rawWhenMs number Raw `_when` in milliseconds (from damage-hit or keyframe).
+---@param distanceStuds number Distance from attacker to defender at the time of
+---                             capture, in studs.
+---@param aid string Full animation asset ID string.
+---@param projectilePart BasePart? Optional live projectile BasePart.
+---@return number adjustedMs Adjusted `_when` in milliseconds, >= 0.
+function DynamicTiming.adjust(rawWhenMs, distanceStuds, aid, projectilePart)
+	local speed = resolveSpeed(aid, projectilePart)
+
+	-- Time (seconds) for the attack to travel from attacker to defender.
+	local travelTimeMs = (distanceStuds / speed) * 1000
+
+	local adjusted = rawWhenMs - travelTimeMs
+
+	return math.max(adjusted, 0)
+end
+
+---Set the attack speed for a specific animation ID.
+---@param aid string Full animation asset ID string.
+---@param speed number studs per second (use 999 for instant/melee).
+function DynamicTiming.setSpeed(aid, speed)
+	attackSpeedDictionary[aid] = speed
+end
+
+---Get the stored attack speed for a specific animation ID.
+---Returns nil if no entry exists (defaultSpeed will be used at adjust-time).
+---@param aid string
+---@return number?
+function DynamicTiming.getSpeed(aid)
+	return attackSpeedDictionary[aid]
+end
+
+---Bulk-set speeds from a dictionary table { [aid] = speed }.
+---@param dict table<string, number>
+function DynamicTiming.loadSpeeds(dict)
+	for aid, speed in next, dict do
+		attackSpeedDictionary[aid] = speed
+	end
+end
+
+-- Return module.
+return DynamicTiming
 
 end)
 __bundle_register("Game/Timings/ModuleManager", function(require, _LOADED, __bundle_register, __bundle_modules)
@@ -10322,8 +10533,7 @@ Defender.rpue = LPH_NO_VIRTUALIZE(function(self, entity, timing, info)
 		self:notify(timing, "(%i) Action 'RPUE Parry' is being executed.", info.index)
 	end
 
-	InputClient.block(true)
-	InputClient.block(false)
+	InputClient.parry()
 end)
 
 ---Check if we're in a valid state to proceed with action handling. Extend me.
@@ -10740,11 +10950,16 @@ Defender.handle = LPH_NO_VIRTUALIZE(function(self, timing, action, notify)
 		return InputClient.dash()
 	end
 
+	-- Apparat (last-resort evasive combo-breaker).
+	if PP_SCRAMBLE_STR(action._type) == "Apparat" then
+		return InputClient.apparat()
+	end
+
 	-- Parry if possible.
 	-- We'll assume that we're in the parry state. There's no other type.
 	if AttributeListener.cparry() then
 		if timing.nfdb or not AttributeListener.cdash() or not dashReplacement then
-			return InputClient.deflect()
+			return InputClient.parry()
 		end
 
 		self:notify(timing, "Action type 'Parry' replaced to 'Dash' type.")
@@ -11212,6 +11427,7 @@ local InputClient = {}
 -- Services.
 local players = game:GetService("Players")
 local userInputService = game:GetService("UserInputService")
+local replicatedStorage = game:GetService("ReplicatedStorage")
 
 ---@module Utility.Configuration
 local Configuration = require("Utility/Configuration")
@@ -11312,6 +11528,31 @@ function InputClient.dash()
 	end
 
 	dash:FireServer(v348, nil)
+end
+
+---Parry. Fires the dedicated Misc/Parry remote in ReplicatedStorage.
+---This is a distinct route from block cycling (deflect) and should be used
+---when a parry window is explicitly intended.
+function InputClient.parry()
+	local remotes = replicatedStorage:FindFirstChild("Remotes")
+	local requestModule = remotes and remotes:FindFirstChild("RequestModule")
+	if not requestModule then
+		return
+	end
+
+	requestModule:FireServer("Misc", "Parry")
+end
+
+---Apparat. Fires the Misc/Evasive remote — a last-resort combo breaker that
+---turns the local player invisible and untargetable.
+function InputClient.apparat()
+	local remotes = replicatedStorage:FindFirstChild("Remotes")
+	local requestModule = remotes and remotes:FindFirstChild("RequestModule")
+	if not requestModule then
+		return
+	end
+
+	requestModule:FireServer("Misc", "Evasive")
 end
 
 -- Return InputClient module.

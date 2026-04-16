@@ -25,6 +25,9 @@ return LPH_NO_VIRTUALIZE(function()
 	---@module Utility.Logger
 	local Logger = require("Utility/Logger")
 
+	---@module Game.DynamicTiming
+	local DynamicTiming = require("Game/DynamicTiming")
+
 	-- Services.
 	local players = game:GetService("Players")
 
@@ -38,6 +41,11 @@ return LPH_NO_VIRTUALIZE(function()
 	-- Captured animation data for auto-generating timings.
 	-- Key: animation ID, Value: { id, entityName, length, speed, keyframes = { { name, timePosition } }, capturedAt }
 	local capturedAnimations = {}
+
+	-- Animations currently playing on nearby entities (for damage-hit capture).
+	-- Key: animation ID, Value: { track = AnimationTrack, entity = Model }
+	-- Note: only the most recent track per aid is stored.
+	local activePlayingTracks = {}
 
 	---Get distance from local player to an entity.
 	---@param entity Model
@@ -134,6 +142,16 @@ return LPH_NO_VIRTUALIZE(function()
 						capturedAt = os.clock(),
 					}
 				end
+
+				-- Register as an active playing track so damage-hit capture can snapshot it.
+				activePlayingTracks[aid] = { track = track, entity = entity }
+
+				-- Deregister when the track stops.
+				animMaid:add(track.Stopped:Connect(function()
+					if activePlayingTracks[aid] and activePlayingTracks[aid].track == track then
+						activePlayingTracks[aid] = nil
+					end
+				end))
 			end
 
 			-- Listen for keyframes on this track.
@@ -295,45 +313,66 @@ return LPH_NO_VIRTUALIZE(function()
 		timing.pfh = true
 		timing.pfht = 0.15
 
-		-- Create actions from keyframes.
-		local hitKeyframes = {}
-		for _, kf in next, data.keyframes do
-			local kfLower = string.lower(kf.name)
-			if kfLower:find("hit") or kfLower:find("damage") or kfLower:find("attack") or kfLower:find("impact") then
-				table.insert(hitKeyframes, kf)
+		-- ── Determine the best raw _when value ──────────────────────────────
+		-- Priority: damage-hit capture > named keyframe > all keyframes > length fallback.
+
+		if data.damageHitTime then
+			-- Damage-hit capture: adjust for projectile travel time via DynamicTiming.
+			local rawMs = data.damageHitTime.timePos * 1000
+			local dist = data.damageHitTime.distance
+			local adjMs = DynamicTiming.adjust(rawMs, dist, aid, nil)
+
+			local action = Action.new()
+			action.name = "Action_DamageHit_1"
+			action._type = "Parry"
+			action._when = math.round(adjMs)
+			action.hitbox = Vector3.new(20, 20, 30)
+			action.ihbc = false
+
+			timing.actions:push(action)
+
+			Logger.notify(
+				"[DynamicTiming] '%s': raw=%.0fms dist=%.1fst adj=%.0fms",
+				name, rawMs, dist, adjMs
+			)
+		else
+			-- Fallback: keyframe-based generation (original behaviour).
+			local hitKeyframes = {}
+			for _, kf in next, data.keyframes do
+				local kfLower = string.lower(kf.name)
+				if kfLower:find("hit") or kfLower:find("damage") or kfLower:find("attack") or kfLower:find("impact") then
+					table.insert(hitKeyframes, kf)
+				end
 			end
-		end
 
-		-- If no hit keyframes found, use all keyframes as potential action points.
-		local actionKeyframes = #hitKeyframes > 0 and hitKeyframes or data.keyframes
+			local actionKeyframes = #hitKeyframes > 0 and hitKeyframes or data.keyframes
 
-		if #actionKeyframes > 0 then
-			-- Sort by time position.
-			table.sort(actionKeyframes, function(a, b)
-				return a.timePosition < b.timePosition
-			end)
+			if #actionKeyframes > 0 then
+				table.sort(actionKeyframes, function(a, b)
+					return a.timePosition < b.timePosition
+				end)
 
-			for i, kf in next, actionKeyframes do
+				for i, kf in next, actionKeyframes do
+					local action = Action.new()
+					action.name = string.format("Action_%s_%d", kf.name, i)
+					action._type = "Parry"
+					action._when = math.round(kf.timePosition * 1000)
+					action.hitbox = Vector3.new(20, 20, 30)
+					action.ihbc = false
+
+					timing.actions:push(action)
+				end
+			else
+				-- No keyframes at all — use 60% of animation length.
 				local action = Action.new()
-				action.name = string.format("Action_%s_%d", kf.name, i)
+				action.name = "Action_Default_1"
 				action._type = "Parry"
-				action._when = math.round(kf.timePosition * 1000) -- Convert seconds to milliseconds.
+				action._when = math.round(data.length * 0.6 * 1000)
 				action.hitbox = Vector3.new(20, 20, 30)
 				action.ihbc = false
 
 				timing.actions:push(action)
 			end
-		else
-			-- No keyframes captured - create a single parry action at a reasonable time.
-			-- Use 60% of the animation length as the default action time.
-			local action = Action.new()
-			action.name = "Action_Default_1"
-			action._type = "Parry"
-			action._when = math.round(data.length * 0.6 * 1000)
-			action.hitbox = Vector3.new(20, 20, 30)
-			action.ihbc = false
-
-			timing.actions:push(action)
 		end
 
 		-- Push into SaveManager config.
@@ -368,10 +407,77 @@ return LPH_NO_VIRTUALIZE(function()
 		return successCount, failCount
 	end
 
+	---Hook the local player's Humanoid HealthChanged to capture damage-hit timestamps.
+	---Called once per character spawn so it always targets the current Humanoid.
+	---@param character Model
+	local function hookLocalDamage(character)
+		local humanoid = character:FindFirstChildWhichIsA("Humanoid")
+		if not humanoid then
+			return
+		end
+
+		local lastHealth = humanoid.Health
+
+		loggerMaid:add(humanoid.HealthChanged:Connect(function(newHealth)
+			-- Only care about damage (health decrease).
+			if newHealth >= lastHealth then
+				lastHealth = newHealth
+				return
+			end
+
+			lastHealth = newHealth
+
+			-- Snapshot every currently-active animation's time position and distance.
+			-- This becomes the authoritative 'when' for auto-generated timings.
+			if not Configuration.expectToggleValue("EnableAnimationCapture") then
+				return
+			end
+
+			for aid, entry in next, activePlayingTracks do
+				if not capturedAnimations[aid] then
+					continue
+				end
+
+				local timePos = entry.track.TimePosition
+				local dist = getDistanceTo(entry.entity)
+
+				-- Only update if this snapshot is more recent (later in the animation).
+				local existing = capturedAnimations[aid].damageHitTime
+				if not existing or timePos > existing.timePos then
+					capturedAnimations[aid].damageHitTime = {
+						timePos = timePos,
+						distance = dist,
+					}
+
+					Library:AddTelemetryEntry(
+						"[DamageCap] '%s' hit at tp=%.3fs dist=%.1fst",
+						capturedAnimations[aid].entityName,
+						timePos,
+						dist
+					)
+				end
+			end
+		end))
+	end
+
 	---Initialize AnimationLogger module.
 	function AnimationLogger.init()
 		if isInitialized then
 			return
+		end
+
+		-- Hook local player damage on current and future characters.
+		local localPlayer = players.LocalPlayer
+		if localPlayer then
+			if localPlayer.Character then
+				hookLocalDamage(localPlayer.Character)
+			end
+
+			loggerMaid:add(localPlayer.CharacterAdded:Connect(function(char)
+				task.defer(function()
+					hookLocalDamage(char)
+				end)
+			end))
 		end
 
 		-- Track existing players.

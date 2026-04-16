@@ -175,8 +175,7 @@ Defender.rpue = LPH_NO_VIRTUALIZE(function(self, entity, timing, info)
 		self:notify(timing, "(%i) Action 'RPUE Parry' is being executed.", info.index)
 	end
 
-	InputClient.block(true)
-	InputClient.block(false)
+	InputClient.parry()
 end)
 
 ---Check if we're in a valid state to proceed with action handling. Extend me.
@@ -593,11 +592,16 @@ Defender.handle = LPH_NO_VIRTUALIZE(function(self, timing, action, notify)
 		return InputClient.dash()
 	end
 
+	-- Apparat (last-resort evasive combo-breaker).
+	if PP_SCRAMBLE_STR(action._type) == "Apparat" then
+		return InputClient.apparat()
+	end
+
 	-- Parry if possible.
 	-- We'll assume that we're in the parry state. There's no other type.
 	if AttributeListener.cparry() then
 		if timing.nfdb or not AttributeListener.cdash() or not dashReplacement then
-			return InputClient.deflect()
+			return InputClient.parry()
 		end
 
 		self:notify(timing, "Action type 'Parry' replaced to 'Dash' type.")
