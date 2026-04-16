@@ -69,7 +69,6 @@ end
 function BuilderSection:reset()
 	-- Reset timing elements.
 	self.timingName:SetRawValue("")
-	self.timingType:SetRawValue("Config")
 	self.timingTag:SetRawValue("Undefined")
 	self.initialMaximumDistance:SetRawValue(0)
 	self.punishableWindow:SetRawValue(0)
