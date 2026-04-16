@@ -43,6 +43,10 @@ local lycorisMaid = Maid.new()
 -- Constants.
 local LOBBY_PLACE_ID = 14067600077
 local LOCAL_QUEUE_FILE = "Output/Bundled.lua"
+local SUPPORTED_PLACE_IDS = {
+	[14067600077] = true,
+	[18637069183] = true,
+}
 
 -- Services.
 local playersService = game:GetService("Players")
@@ -50,6 +54,16 @@ local replicatedStorage = game:GetService("ReplicatedStorage")
 
 -- Timestamp.
 local startTimestamp = os.clock()
+
+local function safeCall(name, callback)
+	local ok, err = pcall(callback)
+
+	if not ok then
+		Logger.warn(name .. " failed: " .. tostring(err))
+	end
+
+	return ok
+end
 
 ---Initialize instance.
 function Lycoris.init()
@@ -102,16 +116,24 @@ queuedChunk()
 		Logger.warn("Script has failed to queue on teleport because the function does not exist.")
 	end
 
+	if not SUPPORTED_PLACE_IDS[game.PlaceId] then
+		return Logger.warn("Script initialized in compatibility mode for unsupported game: " .. tostring(game.PlaceId))
+	end
+
 	local tslot = PersistentData.get("tslot")
 	local tdestination = PersistentData.get("tdestination")
 
 	if game.PlaceId == LOBBY_PLACE_ID and tslot and tdestination then
-		local remotes = replicatedStorage:WaitForChild("Remotes")
-		local chooseSlotRemote = remotes:WaitForChild("ChooseSlot")
-		local teleportRemote = remotes:WaitForChild("Teleport")
+		local remotes = replicatedStorage:FindFirstChild("Remotes")
+		local chooseSlotRemote = remotes and remotes:FindFirstChild("ChooseSlot")
+		local teleportRemote = remotes and remotes:FindFirstChild("Teleport")
 
-		chooseSlotRemote:InvokeServer(tslot, nil)
-		teleportRemote:InvokeServer({ teleportTo = tdestination })
+		if not chooseSlotRemote or not teleportRemote then
+			Logger.warn("Lobby remotes are missing. Skipping slot teleport.")
+		else
+			chooseSlotRemote:InvokeServer(tslot, nil)
+			teleportRemote:InvokeServer({ teleportTo = tdestination })
+		end
 	end
 
 	PersistentData.set("tslot", nil)
@@ -121,7 +143,12 @@ queuedChunk()
 		return Logger.warn("Script has initialized in the lobby.")
 	end
 
-	local remotes = replicatedStorage:WaitForChild("Remotes")
+	local remotes = replicatedStorage:FindFirstChild("Remotes")
+
+	if not remotes then
+		return Logger.warn("Script initialized in compatibility mode: missing ReplicatedStorage.Remotes.")
+	end
+
 	local vastoVfx = remotes:FindFirstChild("VastoVfx")
 
 	if vastoVfx then
@@ -216,21 +243,21 @@ queuedChunk()
 		)
 	end
 
-	PlayerScanning.init()
+	safeCall("PlayerScanning.init", PlayerScanning.init)
 
-	Keybinding.init()
+	safeCall("Keybinding.init", Keybinding.init)
 
-	CoreGuiManager.set()
+	safeCall("CoreGuiManager.set", CoreGuiManager.set)
 
-	SaveManager.init()
+	safeCall("SaveManager.init", SaveManager.init)
 
-	ModuleManager.refresh()
+	safeCall("ModuleManager.refresh", ModuleManager.refresh)
 
-	ControlModule.init()
+	safeCall("ControlModule.init", ControlModule.init)
 
-	Features.init()
+	safeCall("Features.init", Features.init)
 
-	Menu.init()
+	safeCall("Menu.init", Menu.init)
 
 	Logger.notify("Script has been initialized in %ims.", (os.clock() - startTimestamp) * 1000)
 end
@@ -239,21 +266,21 @@ end
 function Lycoris.detach()
 	lycorisMaid:clean()
 
-	PlayerScanning.detach()
+	safeCall("PlayerScanning.detach", PlayerScanning.detach)
 
-	Keybinding.detach()
+	safeCall("Keybinding.detach", Keybinding.detach)
 
-	ModuleManager.detach()
+	safeCall("ModuleManager.detach", ModuleManager.detach)
 
-	SaveManager.detach()
+	safeCall("SaveManager.detach", SaveManager.detach)
 
-	Menu.detach()
+	safeCall("Menu.detach", Menu.detach)
 
-	ControlModule.detach()
+	safeCall("ControlModule.detach", ControlModule.detach)
 
-	Features.detach()
+	safeCall("Features.detach", Features.detach)
 
-	CoreGuiManager.clear()
+	safeCall("CoreGuiManager.clear", CoreGuiManager.clear)
 
 	Logger.warn("Script has been detached.")
 end
