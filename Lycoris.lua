@@ -42,6 +42,7 @@ local lycorisMaid = Maid.new()
 
 -- Constants.
 local LOBBY_PLACE_ID = 14067600077
+local LOCAL_QUEUE_FILE = "Output/Bundled.lua"
 
 -- Services.
 local playersService = game:GetService("Players")
@@ -72,14 +73,24 @@ function Lycoris.init()
 		Lycoris.dpscanning = true
 	end
 
-	if script_key and queue_on_teleport and not Lycoris.queued and not no_queue_on_teleport then
-		-- String.
-		local scriptKeyQueueString = string.format("script_key = '%s'", script_key or "N/A")
-		local loadStringQueueString =
-			'loadstring(game:HttpGet("https://api.luarmor.net/files/v3/loaders/0216eb5f95556e660be56009441409ae.lua"))()'
+	if queue_on_teleport and not Lycoris.queued and not no_queue_on_teleport then
+		local queuedLocalScript = string.format(
+			[[
+assert(readfile, "readfile is not available for queued bootstrap.")
+
+local queuedSource = readfile(%q)
+assert(queuedSource and queuedSource ~= "", "Queued script was empty.")
+
+local queuedChunk, queuedError = loadstring(queuedSource)
+assert(queuedChunk, queuedError)
+
+queuedChunk()
+			]],
+			LOCAL_QUEUE_FILE
+		)
 
 		-- Queue.
-		queue_on_teleport(scriptKeyQueueString .. "\n" .. loadStringQueueString)
+		queue_on_teleport(queuedLocalScript)
 
 		-- Mark.
 		Lycoris.queued = true
@@ -88,7 +99,7 @@ function Lycoris.init()
 		Logger.warn("Script has been queued for next teleport.")
 	else
 		-- Fail.
-		Logger.warn("Script has failed to queue on teleport because Luarmor internals or the function do not exist.")
+		Logger.warn("Script has failed to queue on teleport because the function does not exist.")
 	end
 
 	local tslot = PersistentData.get("tslot")
