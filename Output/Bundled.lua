@@ -223,8 +223,13 @@ queuedChunk()
 		Logger.warn("Script has failed to queue on teleport because the function does not exist.")
 	end
 
-	if not SUPPORTED_PLACE_IDS[game.PlaceId] then
-		return Logger.warn("Script initialized in compatibility mode for unsupported game: " .. tostring(game.PlaceId))
+	local isSupportedPlace = SUPPORTED_PLACE_IDS[game.PlaceId] == true
+
+	if not isSupportedPlace then
+		Logger.warn("Script initialized in compatibility mode for unsupported game: " .. tostring(game.PlaceId))
+		safeCall("CoreGuiManager.set", CoreGuiManager.set)
+		safeCall("Menu.init", Menu.init)
+		return Logger.notify("Compatibility UI mode is active in %ims.", (os.clock() - startTimestamp) * 1000)
 	end
 
 	local tslot = PersistentData.get("tslot")
@@ -253,7 +258,10 @@ queuedChunk()
 	local remotes = replicatedStorage:FindFirstChild("Remotes")
 
 	if not remotes then
-		return Logger.warn("Script initialized in compatibility mode: missing ReplicatedStorage.Remotes.")
+		Logger.warn("Script initialized in compatibility mode: missing ReplicatedStorage.Remotes.")
+		safeCall("CoreGuiManager.set", CoreGuiManager.set)
+		safeCall("Menu.init", Menu.init)
+		return Logger.notify("Compatibility UI mode is active in %ims.", (os.clock() - startTimestamp) * 1000)
 	end
 
 	local vastoVfx = remotes:FindFirstChild("VastoVfx")
