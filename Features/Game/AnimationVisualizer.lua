@@ -518,6 +518,14 @@ return LPH_NO_VIRTUALIZE(function()
 		end
 	end
 
+	---Load an animation ID into the visualizer and begin playback.
+	---@param aid string Full animation asset ID (e.g. "rbxassetid://123456").
+	function AnimationVisualizer.loadId(aid)
+		AnimationVisualizer.visible(true)
+		animationTextbox.Text = aid
+		onIdFocusLost(true, nil)
+	end
+
 	---Set the visibility of the AnimationVisualizer.
 	---@param state boolean
 	function AnimationVisualizer.visible(state)

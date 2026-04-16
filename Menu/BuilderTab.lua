@@ -230,10 +230,40 @@ function BuilderTab.initCaptureSection(groupbox)
 		Tooltip = "When enabled, animations played by nearby entities are captured for timing generation.",
 	})
 
+	groupbox:AddSlider("CaptureMinDistance", {
+		Text = "Capture Min Distance",
+		Min = 0,
+		Max = 200,
+		Rounding = 0,
+		Suffix = "m",
+		Default = 0,
+	})
+
+	groupbox:AddSlider("CaptureMaxDistance", {
+		Text = "Capture Max Distance",
+		Min = 0,
+		Max = 1000,
+		Rounding = 0,
+		Suffix = "m",
+		Default = 100,
+	})
+
 	local capturedList = groupbox:AddDropdown("CapturedAnimationList", {
 		Text = "Captured Animations",
 		Values = {},
 		AllowNull = true,
+		Callback = function(value)
+			if not value then
+				return
+			end
+
+			local aid = value:match("%((.+)%)$")
+			if not aid then
+				return
+			end
+
+			AnimationVisualizer.loadId(aid)
+		end,
 	})
 
 	local timingNameInput = groupbox:AddInput("GeneratedTimingName", {

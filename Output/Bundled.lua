@@ -8683,6 +8683,21 @@ return LPH_NO_VIRTUALIZE(function()
 		return distance >= minDist and distance <= maxDist
 	end
 
+	---Check if a distance is within the capture-specific range.
+	---@param distance number
+	---@return boolean
+	local function isInCaptureRange(distance)
+		local minDist = Configuration.expectOptionValue("CaptureMinDistance") or 0
+		local maxDist = Configuration.expectOptionValue("CaptureMaxDistance") or 0
+
+		-- A max of 0 means no distance filtering.
+		if maxDist <= 0 then
+			return true
+		end
+
+		return distance >= minDist and distance <= maxDist
+	end
+
 	---Get the parent entity (Model) of an Animator.
 	---@param animator Animator
 	---@return Model?
@@ -8717,24 +8732,29 @@ return LPH_NO_VIRTUALIZE(function()
 		-- Listen for new animations being played.
 		animMaid:add(animator.AnimationPlayed:Connect(function(track)
 			local distance = getDistanceTo(entity)
-			if not isInRange(distance) then
+			local inLogRange = isInRange(distance)
+			local inCaptureRange = isInCaptureRange(distance)
+
+			if not inLogRange and not inCaptureRange then
 				return
 			end
 
 			local aid = track.Animation and track.Animation.AnimationId or "Unknown"
 
 			-- Log the animation play event.
-			Library:AddTelemetryEntry(
-				"(%.1fm) '%s' played '%s' (Speed: %.2f, Length: %.3f)",
-				distance,
-				entity.Name,
-				aid,
-				track.Speed,
-				track.Length
-			)
+			if inLogRange then
+				Library:AddTelemetryEntry(
+					"(%.1fm) '%s' played '%s' (Speed: %.2f, Length: %.3f)",
+					distance,
+					entity.Name,
+					aid,
+					track.Speed,
+					track.Length
+				)
+			end
 
 			-- Capture animation data if enabled.
-			if Configuration.expectToggleValue("EnableAnimationCapture") then
+			if Configuration.expectToggleValue("EnableAnimationCapture") and inCaptureRange then
 				if not capturedAnimations[aid] then
 					capturedAnimations[aid] = {
 						id = aid,
@@ -8759,10 +8779,12 @@ return LPH_NO_VIRTUALIZE(function()
 
 			-- Listen for keyframes on this track.
 			animMaid:add(track.KeyframeReached:Connect(function(kfName)
-				Library:AddKeyFrameEntry(getDistanceTo(entity), aid, kfName, track.TimePosition, false)
+				if inLogRange then
+					Library:AddKeyFrameEntry(getDistanceTo(entity), aid, kfName, track.TimePosition, false)
+				end
 
 				-- Capture keyframe data if enabled.
-				if Configuration.expectToggleValue("EnableAnimationCapture") and capturedAnimations[aid] then
+				if Configuration.expectToggleValue("EnableAnimationCapture") and inCaptureRange and capturedAnimations[aid] then
 					local kfs = capturedAnimations[aid].keyframes
 					local exists = false
 
@@ -14771,6 +14793,14 @@ return LPH_NO_VIRTUALIZE(function()
 		end
 	end
 
+	---Load an animation ID into the visualizer and begin playback.
+	---@param aid string Full animation asset ID (e.g. "rbxassetid://123456").
+	function AnimationVisualizer.loadId(aid)
+		AnimationVisualizer.visible(true)
+		animationTextbox.Text = aid
+		onIdFocusLost(true, nil)
+	end
+
 	---Set the visibility of the AnimationVisualizer.
 	---@param state boolean
 	function AnimationVisualizer.visible(state)
@@ -18102,10 +18132,40 @@ function BuilderTab.initCaptureSection(groupbox)
 		Tooltip = "When enabled, animations played by nearby entities are captured for timing generation.",
 	})
 
+	groupbox:AddSlider("CaptureMinDistance", {
+		Text = "Capture Min Distance",
+		Min = 0,
+		Max = 200,
+		Rounding = 0,
+		Suffix = "m",
+		Default = 0,
+	})
+
+	groupbox:AddSlider("CaptureMaxDistance", {
+		Text = "Capture Max Distance",
+		Min = 0,
+		Max = 1000,
+		Rounding = 0,
+		Suffix = "m",
+		Default = 100,
+	})
+
 	local capturedList = groupbox:AddDropdown("CapturedAnimationList", {
 		Text = "Captured Animations",
 		Values = {},
 		AllowNull = true,
+		Callback = function(value)
+			if not value then
+				return
+			end
+
+			local aid = value:match("%((.+)%)$")
+			if not aid then
+				return
+			end
+
+			AnimationVisualizer.loadId(aid)
+		end,
 	})
 
 	local timingNameInput = groupbox:AddInput("GeneratedTimingName", {
