@@ -8680,6 +8680,9 @@ return LPH_NO_VIRTUALIZE(function()
 	---@module Game.DynamicTiming
 	local DynamicTiming = require("Game/DynamicTiming")
 
+	---@module Features.Combat.TimingHarvester
+	local TimingHarvester = require("Features/Combat/TimingHarvester")
+
 	-- Services.
 	local players = game:GetService("Players")
 
@@ -8789,6 +8792,9 @@ return LPH_NO_VIRTUALIZE(function()
 			end
 
 			local aid = track.Animation and track.Animation.AnimationId or "Unknown"
+
+			-- Feed the timing harvester (self-gated by EnableTimingHarvester).
+			TimingHarvester.onAnimationStart(aid, entity, track)
 
 			-- Log the animation play event.
 			if inLogRange then
@@ -9191,6 +9197,628 @@ return LPH_NO_VIRTUALIZE(function()
 end)()
 
 end)
+__bundle_register("Features/Combat/TimingHarvester", function(require, _LOADED, __bundle_register, __bundle_modules)
+return LPH_NO_VIRTUALIZE(function()
+	-- TimingHarvester module.
+	-- Accumulates labelled parry samples from live play: every time a nearby animation
+	-- starts, every time we press parry, every time Parry/PerfectParry flips true, every
+	-- time we take damage. A solver turns those samples into an AnimationTiming and can
+	-- promote it to the active config.
+	local TimingHarvester = {}
+
+	---@module Utility.Maid
+	local Maid = require("Utility/Maid")
+
+	---@module Utility.Logger
+	local Logger = require("Utility/Logger")
+
+	---@module Utility.Configuration
+	local Configuration = require("Utility/Configuration")
+
+	-- Services.
+	local players = game:GetService("Players")
+	local stats = game:GetService("Stats")
+
+	-- State.
+	local harvesterMaid = Maid.new()
+	local damageMaid = Maid.new()
+	local isInit = false
+
+	-- Ring buffer of recent nearby animation plays.
+	-- Each entry: { aid, entity, entityName, t0, speed, length, distance }
+	local recentAnims = {}
+
+	-- In-flight press. Set on onParryPress, consumed by outcome flip or timeout.
+	local pendingPress = nil
+
+	-- Sample DB: [aid] = { meta = { aid, entityName, firstSeenAt }, pressSamples = {...}, hitSamples = {...} }
+	local samples = {}
+
+	-- Tuning constants.
+	local MAX_RECENT_ANIMS = 24
+	local ANIM_LOOKBACK_S = 2.0
+	local MAX_PRESS_OFFSET_S = 1.5
+	local OUTCOME_WAIT_S = 0.5
+	local ATTRIB_MAX_DISTANCE = 60
+
+	---Get full RTT in seconds from Stats.Network.ServerStatsItem."Data Ping" (ms).
+	---@return number
+	local function rttSeconds()
+		local network = stats:FindFirstChild("Network")
+		if not network then
+			return 0
+		end
+
+		local serverStatsItem = network:FindFirstChild("ServerStatsItem")
+		if not serverStatsItem then
+			return 0
+		end
+
+		local dataPing = serverStatsItem:FindFirstChild("Data Ping")
+		if not dataPing then
+			return 0
+		end
+
+		local ok, v = pcall(function()
+			return dataPing:GetValue()
+		end)
+		return (ok and type(v) == "number") and (v * 0.001) or 0
+	end
+
+	---Distance from local player to an entity (nil if unknown).
+	---@param entity Model?
+	---@return number?
+	local function distanceTo(entity)
+		local localChar = players.LocalPlayer and players.LocalPlayer.Character
+		if not localChar or not localChar.PrimaryPart or not entity then
+			return nil
+		end
+
+		local target = entity:IsA("Model") and entity.PrimaryPart
+			or entity:FindFirstChildWhichIsA("BasePart", true)
+		if not target then
+			return nil
+		end
+
+		return (localChar.PrimaryPart.Position - target.Position).Magnitude
+	end
+
+	---Is the harvester enabled via config toggle?
+	---@return boolean
+	local function enabled()
+		return Configuration.expectToggleValue("EnableTimingHarvester") == true
+	end
+
+	---Find the animation most likely responsible for an outcome observed at time t.
+	---@param t number
+	---@return table?
+	local function pickCandidate(t)
+		local cutoff = t - ANIM_LOOKBACK_S
+		local best, bestOffset = nil, math.huge
+
+		for i = #recentAnims, 1, -1 do
+			local a = recentAnims[i]
+			if a.t0 < cutoff then
+				break
+			end
+
+			local off = t - a.t0
+			if off >= 0 and off <= MAX_PRESS_OFFSET_S then
+				-- Prefer most recent in-distance animation.
+				local dist = distanceTo(a.entity) or a.distance or math.huge
+				if dist <= ATTRIB_MAX_DISTANCE and off < bestOffset then
+					bestOffset = off
+					best = a
+					best._attribDist = dist
+				end
+			end
+		end
+
+		return best
+	end
+
+	---Get or create a sample bucket for an animation id.
+	---@param aid string
+	---@param entityName string
+	---@return table
+	local function bucket(aid, entityName)
+		local b = samples[aid]
+		if not b then
+			b = {
+				meta = { aid = aid, entityName = entityName, firstSeenAt = tick() },
+				pressSamples = {},
+				hitSamples = {},
+			}
+			samples[aid] = b
+		end
+		return b
+	end
+
+	---Convert observed client-side press offset into server-side animation time position.
+	---@param clientOffset number
+	---@param speed number
+	---@param ping number
+	---@return number
+	local function toServerAnimTime(clientOffset, speed, ping)
+		-- Server-side wall-clock offset = client offset + full RTT (anim start lag + press travel).
+		-- Convert to animation-local time by multiplying by playback speed.
+		return (clientOffset + ping) * (speed or 1.0)
+	end
+
+	---Record an animation start seen from a nearby entity.
+	---@param aid string
+	---@param entity Model?
+	---@param track AnimationTrack?
+	function TimingHarvester.onAnimationStart(aid, entity, track)
+		if not enabled() then
+			return
+		end
+
+		if not aid or aid == "" or aid == "Unknown" then
+			return
+		end
+
+		table.insert(recentAnims, {
+			aid = aid,
+			entity = entity,
+			entityName = entity and entity.Name or "?",
+			t0 = tick(),
+			speed = (track and track.Speed) or 1.0,
+			length = (track and track.Length) or 0,
+			distance = distanceTo(entity),
+		})
+
+		if #recentAnims > MAX_RECENT_ANIMS then
+			table.remove(recentAnims, 1)
+		end
+	end
+
+	---Record a parry press. Opens a pending-outcome window.
+	function TimingHarvester.onParryPress()
+		if not enabled() then
+			return
+		end
+
+		local t = tick()
+		local myPress = { t = t, resolved = false }
+		pendingPress = myPress
+
+		task.delay(OUTCOME_WAIT_S, function()
+			if myPress.resolved or pendingPress ~= myPress then
+				return
+			end
+
+			-- No flip arrived: record as a failed press sample.
+			local candidate = pickCandidate(t)
+			if not candidate then
+				return
+			end
+
+			local ping = rttSeconds()
+			local clientOffset = t - candidate.t0
+			local serverWhen = toServerAnimTime(clientOffset, candidate.speed, ping)
+
+			local b = bucket(candidate.aid, candidate.entityName)
+			table.insert(b.pressSamples, {
+				when = serverWhen,
+				clientOffset = clientOffset,
+				perfect = false,
+				parried = false,
+				distance = candidate._attribDist,
+				ping = ping,
+				t = t,
+			})
+
+			myPress.resolved = true
+		end)
+	end
+
+	---Record a Parry or PerfectParry BoolValue flipping true.
+	---@param perfect boolean
+	function TimingHarvester.onParryResult(perfect)
+		if not enabled() then
+			return
+		end
+
+		local now = tick()
+		local ping = rttSeconds()
+
+		-- Outcome arrives ~ping/2 after the server processed. Attribute to the press time
+		-- if we have a pending press; otherwise to now minus ping/2.
+		local effectiveT = (pendingPress and not pendingPress.resolved) and pendingPress.t
+			or (now - ping * 0.5)
+
+		local candidate = pickCandidate(effectiveT)
+		if not candidate then
+			return
+		end
+
+		local clientOffset = effectiveT - candidate.t0
+		local serverWhen = toServerAnimTime(clientOffset, candidate.speed, ping)
+
+		local b = bucket(candidate.aid, candidate.entityName)
+		table.insert(b.pressSamples, {
+			when = serverWhen,
+			clientOffset = clientOffset,
+			perfect = perfect,
+			parried = true,
+			distance = candidate._attribDist,
+			ping = ping,
+			t = now,
+		})
+
+		if pendingPress then
+			pendingPress.resolved = true
+		end
+	end
+
+	---Record local player taking damage. Attributes to the most recent nearby animation.
+	local function onDamageObserved()
+		if not enabled() then
+			return
+		end
+
+		local now = tick()
+		local ping = rttSeconds()
+
+		-- Damage arrives ~ping/2 after server-side hit processing.
+		local effectiveT = now - ping * 0.5
+		local candidate = pickCandidate(effectiveT)
+		if not candidate then
+			return
+		end
+
+		local clientOffset = effectiveT - candidate.t0
+		local serverWhen = toServerAnimTime(clientOffset, candidate.speed, ping)
+
+		local b = bucket(candidate.aid, candidate.entityName)
+		table.insert(b.hitSamples, {
+			when = serverWhen,
+			clientOffset = clientOffset,
+			distance = candidate._attribDist,
+			ping = ping,
+			t = now,
+		})
+	end
+
+	---Attach a HealthChanged listener to the local humanoid.
+	---@param character Model
+	local function hookDamage(character)
+		damageMaid:clean()
+
+		local humanoid = character:FindFirstChildWhichIsA("Humanoid")
+		if not humanoid then
+			return
+		end
+
+		local lastHealth = humanoid.Health
+		damageMaid:add(humanoid.HealthChanged:Connect(function(h)
+			if h < lastHealth then
+				lastHealth = h
+				onDamageObserved()
+			else
+				lastHealth = h
+			end
+		end))
+	end
+
+	---Median of a numeric list (sorted).
+	---@param t number[]
+	---@return number?
+	local function median(t)
+		if #t == 0 then
+			return nil
+		end
+		local s = table.clone(t)
+		table.sort(s)
+		return s[math.ceil(#s / 2)]
+	end
+
+	---Percentile of a numeric list.
+	---@param t number[]
+	---@param p number 0..1
+	---@return number?
+	local function percentile(t, p)
+		if #t == 0 then
+			return nil
+		end
+		local s = table.clone(t)
+		table.sort(s)
+		local idx = math.max(1, math.min(#s, math.ceil(#s * p)))
+		return s[idx]
+	end
+
+	---Solve a timing estimate from accumulated samples.
+	---@param aid string
+	---@return table?
+	function TimingHarvester.solve(aid)
+		local b = samples[aid]
+		if not b then
+			return nil
+		end
+
+		local perfectWhens, parryWhens, failWhens, hitWhens, distances = {}, {}, {}, {}, {}
+
+		for _, s in ipairs(b.pressSamples) do
+			if s.parried then
+				table.insert(parryWhens, s.when)
+				if s.perfect then
+					table.insert(perfectWhens, s.when)
+				end
+			else
+				table.insert(failWhens, s.when)
+			end
+
+			if s.distance then
+				table.insert(distances, s.distance)
+			end
+		end
+
+		for _, s in ipairs(b.hitSamples) do
+			table.insert(hitWhens, s.when)
+			if s.distance then
+				table.insert(distances, s.distance)
+			end
+		end
+
+		-- Prefer Perfect Parry median (tightest window) when we have any; else median
+		-- across all successful parry presses; else median across damage hits.
+		local bestWhen = median(perfectWhens) or median(parryWhens) or median(hitWhens)
+		if not bestWhen then
+			return {
+				aid = aid,
+				entityName = b.meta.entityName,
+				sampleCount = #b.pressSamples + #b.hitSamples,
+				perfectCount = #perfectWhens,
+				parryCount = #parryWhens,
+				failCount = #failWhens,
+				hitCount = #hitWhens,
+				bestWhen = nil,
+			}
+		end
+
+		local minDist = #distances > 0 and math.min(table.unpack(distances)) or 0
+		local maxDist = #distances > 0 and math.max(table.unpack(distances)) or 100
+
+		return {
+			aid = aid,
+			entityName = b.meta.entityName,
+			sampleCount = #b.pressSamples + #b.hitSamples,
+			perfectCount = #perfectWhens,
+			parryCount = #parryWhens,
+			failCount = #failWhens,
+			hitCount = #hitWhens,
+			bestWhen = bestWhen,
+			perfectRange = {
+				lo = percentile(perfectWhens, 0.1),
+				hi = percentile(perfectWhens, 0.9),
+			},
+			parryRange = {
+				lo = percentile(parryWhens, 0.1),
+				hi = percentile(parryWhens, 0.9),
+			},
+			hitRange = {
+				lo = percentile(hitWhens, 0.1),
+				hi = percentile(hitWhens, 0.9),
+			},
+			minDistance = minDist,
+			maxDistance = maxDist,
+			-- Confidence scales with successful parry count.
+			confidence = math.min(1.0, (#perfectWhens + #parryWhens) / 8),
+		}
+	end
+
+	---List harvested animations (one label per aid) for a dropdown.
+	---@return string[]
+	function TimingHarvester.list()
+		local out = {}
+		for aid, b in next, samples do
+			local solved = TimingHarvester.solve(aid)
+			local label
+			if solved and solved.bestWhen then
+				label = string.format(
+					"%s (%s) n=%d/P%d/p%d/f%d when=%dms",
+					b.meta.entityName,
+					aid,
+					solved.sampleCount,
+					solved.perfectCount,
+					solved.parryCount,
+					solved.failCount,
+					math.round((solved.bestWhen or 0) * 1000)
+				)
+			else
+				label = string.format("%s (%s) n=%d no-solve", b.meta.entityName, aid, (solved and solved.sampleCount) or 0)
+			end
+			table.insert(out, label)
+		end
+		table.sort(out)
+		return out
+	end
+
+	---Extract aid from a list label.
+	---@param label string
+	---@return string?
+	function TimingHarvester.aidFromLabel(label)
+		return label and label:match("%((rbxassetid://%d+)%)")
+	end
+
+	---Dump a readable summary of all accumulated samples to the Logger window.
+	function TimingHarvester.dump()
+		local n = 0
+		for aid, b in next, samples do
+			n = n + 1
+			local solved = TimingHarvester.solve(aid)
+			if solved and solved.bestWhen then
+				Logger.warn(
+					"[Harvester] %s %s: n=%d perfect=%d parry=%d fail=%d hit=%d when=%.0fms dist=[%.1f,%.1f] conf=%.2f",
+					b.meta.entityName,
+					aid,
+					solved.sampleCount,
+					solved.perfectCount,
+					solved.parryCount,
+					solved.failCount,
+					solved.hitCount,
+					(solved.bestWhen or 0) * 1000,
+					solved.minDistance,
+					solved.maxDistance,
+					solved.confidence
+				)
+			else
+				Logger.warn("[Harvester] %s %s: n=%d (not solvable yet)", b.meta.entityName, aid, (solved and solved.sampleCount) or 0)
+			end
+		end
+		if n == 0 then
+			Logger.warn("[Harvester] no samples collected yet.")
+		end
+	end
+
+	---Promote a solved timing to the active config.
+	---@param aid string
+	---@param timingName string?
+	---@return boolean, string
+	function TimingHarvester.promoteToConfig(aid, timingName)
+		local SaveManager = require("Game/Timings/SaveManager")
+		local AnimationTiming = require("Game/Timings/AnimationTiming")
+		local Action = require("Game/Timings/Action")
+
+		local solved = TimingHarvester.solve(aid)
+		if not solved then
+			return false, "No samples for aid: " .. tostring(aid)
+		end
+
+		if not solved.bestWhen then
+			return false, string.format("Not enough successful samples for %s (n=%d).", aid, solved.sampleCount)
+		end
+
+		if not SaveManager.as then
+			return false, "SaveManager not ready."
+		end
+
+		local existing = SaveManager.as:index(aid)
+		if existing then
+			return false, string.format("Timing already exists for '%s' (%s).", aid, existing.name)
+		end
+
+		local name = timingName
+		if not name or #name <= 0 then
+			local shortId = aid:match("(%d+)$") or tostring(math.floor(tick()))
+			name = string.format("%s_%s_Harvested", solved.entityName, shortId)
+		end
+
+		local existingName = SaveManager.as:find(name)
+		if existingName then
+			return false, string.format("Timing name '%s' already exists.", name)
+		end
+
+		local timing = AnimationTiming.new()
+		timing._id = aid
+		timing.name = name
+		timing.tag = "Undefined"
+		timing.imdd = math.max(0, math.floor(solved.minDistance - 2))
+		timing.imxd = math.ceil(solved.maxDistance + 5)
+		timing.hitbox = Vector3.new(20, 20, 30)
+		timing.fhb = true
+		timing.pfh = true
+		timing.pfht = 0.15
+
+		local action = Action.new()
+		action.name = string.format("Action_Harvested_n%d", solved.sampleCount)
+		action._type = "Parry"
+		action._when = PP_SCRAMBLE_RE_NUM(math.round(solved.bestWhen * 1000))
+		action.hitbox = Vector3.new(20, 20, 30)
+		action.ihbc = false
+		timing.actions:push(action)
+
+		local ok, err = pcall(SaveManager.as.config.push, SaveManager.as.config, timing)
+		if not ok then
+			return false, "Failed to push timing: " .. tostring(err)
+		end
+
+		Logger.notify(
+			"[Harvester] Promoted '%s' when=%.0fms (n=%d perfect=%d parry=%d conf=%.2f).",
+			name,
+			solved.bestWhen * 1000,
+			solved.sampleCount,
+			solved.perfectCount,
+			solved.parryCount,
+			solved.confidence
+		)
+
+		return true, name
+	end
+
+	---Promote every solvable sample bucket to config.
+	---@return number, number
+	function TimingHarvester.promoteAll()
+		local successCount, failCount = 0, 0
+		for aid, _ in next, samples do
+			local ok, _ = TimingHarvester.promoteToConfig(aid)
+			if ok then
+				successCount = successCount + 1
+			else
+				failCount = failCount + 1
+			end
+		end
+		Logger.notify("[Harvester] Promoted %d timings (%d skipped/failed).", successCount, failCount)
+		return successCount, failCount
+	end
+
+	---Clear all state.
+	function TimingHarvester.clear()
+		samples = {}
+		recentAnims = {}
+		pendingPress = nil
+		Logger.notify("[Harvester] Cleared all samples.")
+	end
+
+	---Return live totals for UI display.
+	---@return number, number
+	function TimingHarvester.counts()
+		local totalSamples, aidCount = 0, 0
+		for _, b in next, samples do
+			aidCount = aidCount + 1
+			totalSamples = totalSamples + #b.pressSamples + #b.hitSamples
+		end
+		return aidCount, totalSamples
+	end
+
+	---Initialize.
+	function TimingHarvester.init()
+		if isInit then
+			return
+		end
+		isInit = true
+
+		local localPlayer = players.LocalPlayer
+		if not localPlayer then
+			return
+		end
+
+		if localPlayer.Character then
+			hookDamage(localPlayer.Character)
+		end
+
+		harvesterMaid:add(localPlayer.CharacterAdded:Connect(function(char)
+			task.defer(function()
+				hookDamage(char)
+			end)
+		end))
+	end
+
+	---Detach.
+	function TimingHarvester.detach()
+		harvesterMaid:clean()
+		damageMaid:clean()
+		samples = {}
+		recentAnims = {}
+		pendingPress = nil
+		isInit = false
+	end
+
+	return TimingHarvester
+end)()
+
+end)
 __bundle_register("Game/DynamicTiming", function(require, _LOADED, __bundle_register, __bundle_modules)
 -- DynamicTiming module.
 -- Calculates a latency- and distance-compensated action trigger time from raw
@@ -9511,6 +10139,9 @@ local Library = require("GUI/Library")
 ---@module Utility.TaskSpawner
 local TaskSpawner = require("Utility/TaskSpawner")
 
+---@module Features.Combat.AttributeListener
+local AttributeListener = require("Features/Combat/AttributeListener")
+
 -- Handle all defense related functions.
 local Defense = {}
 
@@ -9780,11 +10411,11 @@ local updateAssistance = LPH_NO_VIRTUALIZE(function()
 		return
 	end
 
-	if character:GetAttribute("CurrentState") == "Unconscious" then
+	if AttributeListener.cs("Ragdoll") or AttributeListener.cs("Stun") then
 		return
 	end
 
-	if target.character:GetAttribute("CurrentState") == "Unconscious" then
+	if AttributeListener.csOn(target.character, "Ragdoll") or AttributeListener.csOn(target.character, "Stun") then
 		return
 	end
 
@@ -9940,6 +10571,200 @@ end
 
 -- Return Defense module.
 return Defense
+
+end)
+__bundle_register("Features/Combat/AttributeListener", function(require, _LOADED, __bundle_register, __bundle_modules)
+-- AttributeListener module.
+local AttributeListener = { lastParry = nil, lastDash = nil, lastKnock = nil }
+
+---@modules Utility.Maid
+local Maid = require("Utility/Maid")
+
+---@module Utility.Signal
+local Signal = require("Utility/Signal")
+
+---@module Features.Combat.TimingHarvester
+local TimingHarvester = require("Features/Combat/TimingHarvester")
+
+-- Services.
+local players = game:GetService("Players")
+
+-- Top-level maid (CharacterAdded / CharacterRemoving signals).
+local attributeMaid = Maid.new()
+
+-- Per-character maid; cleaned on CharacterRemoving. Holds watchers on CharacterState BoolValues.
+local stateMaid = Maid.new()
+
+-- BoolValues under character.CharacterState that we care about. When the .Value flips true,
+-- the paired callback fires. Mashle splits state across many BoolValues instead of using
+-- Type Soul's single CurrentState string attribute.
+local WATCHED = {
+	Parry = function()
+		AttributeListener.lastParry = tick()
+		TimingHarvester.onParryResult(false)
+	end,
+	PerfectParry = function()
+		AttributeListener.lastParry = tick()
+		TimingHarvester.onParryResult(true)
+	end,
+	DashDodge = function()
+		AttributeListener.lastDash = tick()
+	end,
+	Ragdoll = function()
+		AttributeListener.lastKnock = tick()
+	end,
+	Stun = function()
+		AttributeListener.lastKnock = tick()
+	end,
+}
+
+---Read a CharacterState BoolValue from any character. Returns false when missing.
+---@param character Model?
+---@param name string
+---@return boolean
+function AttributeListener.csOn(character, name)
+	if not character then
+		return false
+	end
+
+	local state = character:FindFirstChild("CharacterState")
+	if not state then
+		return false
+	end
+
+	local bv = state:FindFirstChild(name)
+	if not bv or not bv:IsA("BoolValue") then
+		return false
+	end
+
+	return bv.Value
+end
+
+---Read a CharacterState BoolValue on the local character.
+---@param name string
+---@return boolean
+function AttributeListener.cs(name)
+	local localPlayer = players.LocalPlayer
+	return AttributeListener.csOn(localPlayer and localPlayer.Character, name)
+end
+
+---Hook a BoolValue so true transitions call onTrue.
+---@param bv BoolValue
+---@param onTrue function
+local function watchBool(bv, onTrue)
+	local signal = Signal.new(bv:GetPropertyChangedSignal("Value"))
+	stateMaid:add(signal:connect("AttributeListener_CSValue_" .. bv.Name, function()
+		if bv.Value then
+			onTrue()
+		end
+	end))
+end
+
+---Attach watchers to every BoolValue we care about under a CharacterState folder, and handle
+---late-added ones via ChildAdded.
+---@param characterState Instance
+local function attachStateWatches(characterState)
+	for name, onTrue in pairs(WATCHED) do
+		local bv = characterState:FindFirstChild(name)
+		if bv and bv:IsA("BoolValue") then
+			watchBool(bv, onTrue)
+		end
+	end
+
+	local childAdded = Signal.new(characterState.ChildAdded)
+	stateMaid:add(childAdded:connect("AttributeListener_OnCSChildAdded", function(child)
+		local onTrue = WATCHED[child.Name]
+		if onTrue and child:IsA("BoolValue") then
+			watchBool(child, onTrue)
+		end
+	end))
+end
+
+---On character added.
+---@param character Model
+local function onCharacterAdded(character)
+	stateMaid:clean()
+
+	task.spawn(function()
+		local cs = character:WaitForChild("CharacterState", 10)
+		if cs then
+			attachStateWatches(cs)
+		end
+	end)
+end
+
+---On character removing.
+---@param character Model
+local function onCharacterRemoving(character)
+	stateMaid:clean()
+	AttributeListener.lastParry = nil
+	AttributeListener.lastDash = nil
+	AttributeListener.lastKnock = nil
+end
+
+---Knocked recently?
+---@return boolean
+function AttributeListener.krecently()
+	local localPlayer = players.LocalPlayer
+	local character = localPlayer.Character
+	if not character then
+		return false
+	end
+
+	return AttributeListener.lastKnock and tick() - AttributeListener.lastKnock <= 0.250
+end
+
+---Can we parry?
+---@return boolean
+function AttributeListener.cparry()
+	local localPlayer = players.LocalPlayer
+	local character = localPlayer.Character
+	if not character then
+		return false
+	end
+
+	return not AttributeListener.lastParry or tick() - AttributeListener.lastParry >= (2000 / 1000)
+end
+
+---Can we dash?
+---@return boolean
+function AttributeListener.cdash()
+	local localPlayer = players.LocalPlayer
+	local character = localPlayer.Character
+	if not character then
+		return false
+	end
+
+	return not AttributeListener.lastDash or tick() - AttributeListener.lastDash >= (1750 / 1000)
+end
+
+---Initialize AttributeListener module.
+function AttributeListener.init()
+	local localPlayer = players.LocalPlayer
+	local characterAddedSignal = Signal.new(localPlayer.CharacterAdded)
+	local characterRemovingSignal = Signal.new(localPlayer.CharacterRemoving)
+
+	attributeMaid:add(characterAddedSignal:connect("AttributeListener_OnCharacterAdded", function(character)
+		onCharacterAdded(character)
+	end))
+
+	attributeMaid:add(characterRemovingSignal:connect("AttributeListener_OnCharacterRemoving", function(character)
+		onCharacterRemoving(character)
+	end))
+
+	if localPlayer.Character then
+		onCharacterAdded(localPlayer.Character)
+	end
+end
+
+---Detach AttributeListener module.
+function AttributeListener.detach()
+	stateMaid:clean()
+	attributeMaid:clean()
+end
+
+-- Return AttributeListener module.
+return AttributeListener
 
 end)
 __bundle_register("Features/Combat/PositionHistory", function(require, _LOADED, __bundle_register, __bundle_modules)
@@ -10464,10 +11289,11 @@ function Defender:miss(type, key, name, distance, parent)
 		return false
 	end
 
-	if
-		distance < (Configuration.expectOptionValue("MinimumLoggerDistance") or 0)
-		or distance > (Configuration.expectOptionValue("MaximumLoggerDistance") or 0)
-	then
+	-- 0 on max = no upper bound (matches AnimationLogger semantics).
+	local minDist = Configuration.expectOptionValue("MinimumLoggerDistance") or 0
+	local maxDist = Configuration.expectOptionValue("MaximumLoggerDistance") or 0
+
+	if distance < minDist or (maxDist > 0 and distance > maxDist) then
 		return false
 	end
 
@@ -10591,11 +11417,11 @@ Defender.valid = LPH_NO_VIRTUALIZE(function(self, timing, action)
 		return self:notify(timing, "User was knocked recently.")
 	end
 
-	if selectedFilters["Disable When In Dash"] and character:GetAttribute("CurrentState") == "Dashing" then
+	if selectedFilters["Disable When In Dash"] and AttributeListener.cs("DashDodge") then
 		return self:notify(timing, "User is dashing.")
 	end
 
-	if character:GetAttribute("CurrentState") == "Attacking" or character:GetAttribute("CurrentState") == "Skill" then
+	if AttributeListener.cs("Attacking") or AttributeListener.cs("Charging") then
 		return self:notify(timing, "Currently attacking.")
 	end
 
@@ -11331,118 +12157,6 @@ end)
 return OriginalStore
 
 end)
-__bundle_register("Features/Combat/AttributeListener", function(require, _LOADED, __bundle_register, __bundle_modules)
--- AttributeListener module.
-local AttributeListener = { lastParry = nil, lastDash = nil, lastKnock = nil }
-
----@modules Utility.Maid
-local Maid = require("Utility/Maid")
-
----@module Utility.Signal
-local Signal = require("Utility/Signal")
-
--- Services.
-local players = game:GetService("Players")
-
--- Attribute maid.
-local attributeMaid = Maid.new()
-
----On character added.
----@param character Model
-local function onCharacterAdded(character)
-	local attributeChangedSignal = Signal.new(character:GetAttributeChangedSignal("CurrentState"))
-
-	attributeMaid["CurrentStateAttributeChanged"] = attributeChangedSignal:connect(
-		"AttributeListener_OnAttributeChanged",
-		function()
-			if character:GetAttribute("CurrentState") == "Parrying" then
-				AttributeListener.lastParry = tick()
-			end
-
-			if character:GetAttribute("CurrentState") == "Dashing" then
-				AttributeListener.lastDash = tick()
-			end
-
-			if character:GetAttribute("CurrentState") == "Unconscious" then
-				AttributeListener.lastKnock = tick()
-			end
-		end
-	)
-end
-
----On character removing.
----@param character Model
-local function onCharacterRemoving(character)
-	attributeMaid["CurrentStateAttributeChanged"] = nil
-	AttributeListener.lastParry = nil
-	AttributeListener.lastDash = nil
-	AttributeListener.lastKnock = nil
-end
-
----Knocked recently?
----@return boolean
-function AttributeListener.krecently()
-	local localPlayer = players.LocalPlayer
-	local character = localPlayer.Character
-	if not character then
-		return false
-	end
-
-	return AttributeListener.lastKnock and tick() - AttributeListener.lastKnock <= 0.250
-end
-
----Can we parry?
----@return boolean
-function AttributeListener.cparry()
-	local localPlayer = players.LocalPlayer
-	local character = localPlayer.Character
-	if not character then
-		return false
-	end
-
-	return not AttributeListener.lastParry or tick() - AttributeListener.lastParry >= (2000 / 1000)
-end
-
----Can we dash?
----@return boolean
-function AttributeListener.cdash()
-	local localPlayer = players.LocalPlayer
-	local character = localPlayer.Character
-	if not character then
-		return false
-	end
-
-	return not AttributeListener.lastDash or tick() - AttributeListener.lastDash >= (1750 / 1000)
-end
-
----Initialize AttributeListener module.
-function AttributeListener.init()
-	local localPlayer = players.LocalPlayer
-	local characterAddedSignal = Signal.new(localPlayer.CharacterAdded)
-	local characterRemovingSignal = Signal.new(localPlayer.CharacterRemoving)
-
-	attributeMaid:add(characterAddedSignal:connect("AttributeListener_OnCharacterAdded", function(character)
-		onCharacterAdded(character)
-	end))
-
-	attributeMaid:add(characterRemovingSignal:connect("AttributeListener_OnCharacterRemoving", function(character)
-		onCharacterRemoving(character)
-	end))
-
-	if localPlayer.Character then
-		onCharacterAdded(localPlayer.Character)
-	end
-end
-
----Detach AttributeListener module.
-function AttributeListener.detach()
-	attributeMaid:clean()
-end
-
--- Return AttributeListener module.
-return AttributeListener
-
-end)
 __bundle_register("Game/InputClient", function(require, _LOADED, __bundle_register, __bundle_modules)
 -- InputClient module.
 local InputClient = {}
@@ -11454,6 +12168,9 @@ local replicatedStorage = game:GetService("ReplicatedStorage")
 
 ---@module Utility.Configuration
 local Configuration = require("Utility/Configuration")
+
+---@module Features.Combat.TimingHarvester
+local TimingHarvester = require("Features/Combat/TimingHarvester")
 
 ---Deflect. This is called this way because it can either give parry or block frames depending on whether or not parry is on cooldown.
 function InputClient.deflect()
@@ -11526,6 +12243,7 @@ function InputClient.parry()
 		return
 	end
 
+	TimingHarvester.onParryPress()
 	requestModule:FireServer("Misc", "Parry")
 end
 
@@ -12428,13 +13146,11 @@ AnimatorDefender.process = LPH_NO_VIRTUALIZE(function(self, track)
 	-- Animation ID.
 	local aid = tostring(track.Animation.AnimationId)
 
-	-- In logging range?
+	-- In logging range? 0 on max = no upper bound (matches AnimationLogger semantics).
 	local distance = self:distance(self.entity)
-	local ilr = distance
-		and (
-			distance >= (Configuration.expectOptionValue("MinimumLoggerDistance") or 0)
-			and distance <= (Configuration.expectOptionValue("MaximumLoggerDistance") or 0)
-		)
+	local minDist = Configuration.expectOptionValue("MinimumLoggerDistance") or 0
+	local maxDist = Configuration.expectOptionValue("MaximumLoggerDistance") or 0
+	local ilr = distance and distance >= minDist and (maxDist <= 0 or distance <= maxDist)
 
 	-- Keyframe logging.
 	local keyframeReached = Signal.new(track.KeyframeReached)
@@ -12775,6 +13491,9 @@ local AnimationLogger = require("Features/Game/AnimationLogger")
 ---@modules Features.Combat.AttributeListener
 local AttributeListener = require("Features/Combat/AttributeListener")
 
+---@module Features.Combat.TimingHarvester
+local TimingHarvester = require("Features/Combat/TimingHarvester")
+
 ---@module Features.Game.Monitoring
 local Monitoring = require("Features/Game/Monitoring")
 
@@ -12795,6 +13514,7 @@ local Input = require("Features/Automation/Input")
 function Features.init()
 	Monitoring.init()
 	AttributeListener.init()
+	TimingHarvester.init()
 	Defense.init()
 	Visuals.init()
 	Movement.init()
@@ -12815,6 +13535,7 @@ function Features.detach()
 
 	Monitoring.detach()
 	AttributeListener.detach()
+	TimingHarvester.detach()
 	Defense.detach()
 	Movement.detach()
 	Visuals.detach()
@@ -17895,6 +18616,9 @@ local AnimationVisualizer = require("Features/Game/AnimationVisualizer")
 ---@module Features.Game.AnimationLogger
 local AnimationLogger = require("Features/Game/AnimationLogger")
 
+---@module Features.Combat.TimingHarvester
+local TimingHarvester = require("Features/Combat/TimingHarvester")
+
 ---@module GUI.Library
 local Library = require("GUI/Library")
 
@@ -18216,6 +18940,117 @@ function BuilderTab.initCaptureSection(groupbox)
 		})
 end
 
+---Initialize timing harvester section.
+---@param groupbox table
+function BuilderTab.initHarvesterSection(groupbox)
+	groupbox:AddToggle("EnableTimingHarvester", {
+		Text = "Enable Timing Harvester",
+		Default = false,
+		Tooltip = "Records every parry press + outcome + damage hit. Solves Perfect Parry / Parry windows per animation.",
+	})
+
+	local statusLabel = groupbox:AddLabel("Samples: 0 aids / 0 total")
+
+	local harvestedList = groupbox:AddDropdown("HarvestedAnimationList", {
+		Text = "Harvested Animations",
+		Values = {},
+		AllowNull = true,
+	})
+
+	local harvestedNameInput = groupbox:AddInput("HarvestedTimingName", {
+		Text = "Timing Name (optional)",
+		Tooltip = "Leave empty to auto-generate '<EntityName>_<id>_Harvested'.",
+	})
+
+	local harvestedAutoSaveInput = groupbox:AddInput("HarvestedAutoSaveConfigName", {
+		Text = "Auto Save Config Name",
+		Tooltip = "Optional: if set, promoted timings are immediately written to this config file.",
+		Placeholder = "example: mashle_autogen",
+	})
+
+	local function autoSaveHarvested()
+		local configName = harvestedAutoSaveInput and harvestedAutoSaveInput.Value
+		if not configName or #configName <= 0 then
+			return
+		end
+
+		local code = SaveManager.write(configName)
+		if code == 0 then
+			Library:Notify(string.format("Auto-saved harvested timings to '%s'.", configName))
+		else
+			Library:Notify(string.format("Failed to auto-save harvested timings to '%s'.", configName))
+		end
+	end
+
+	local function refreshStatus()
+		local aidCount, total = TimingHarvester.counts()
+		statusLabel:SetText(string.format("Samples: %d aids / %d total", aidCount, total))
+	end
+
+	groupbox:AddButton("Refresh Harvested List", function()
+		harvestedList:SetValues(TimingHarvester.list())
+		harvestedList:SetValue(nil)
+		harvestedList:Display()
+		refreshStatus()
+	end)
+
+	groupbox:AddButton("Dump Samples To Logger", function()
+		TimingHarvester.dump()
+		refreshStatus()
+	end)
+
+	groupbox:AddButton("Promote Selected To Config", function()
+		local selected = harvestedList.Value
+		if not selected then
+			return Library:Notify("Select a harvested animation first.")
+		end
+
+		local aid = TimingHarvester.aidFromLabel(selected)
+		if not aid then
+			return Library:Notify("Could not parse animation ID from selection.")
+		end
+
+		local name = harvestedNameInput and harvestedNameInput.Value or nil
+		local ok, result = TimingHarvester.promoteToConfig(aid, name)
+
+		if ok then
+			Library:Notify(string.format("Created timing '%s'.", result))
+			autoSaveHarvested()
+			BuilderTab.refresh()
+		else
+			Library:Notify(result)
+		end
+	end)
+
+	groupbox
+		:AddButton({
+			Text = "Promote All Harvested",
+			DoubleClick = true,
+			Func = function()
+				local s, f = TimingHarvester.promoteAll()
+				Library:Notify(string.format("Promoted %d timings (%d skipped/failed).", s, f))
+
+				if s > 0 then
+					autoSaveHarvested()
+				end
+
+				BuilderTab.refresh()
+			end,
+		})
+		:AddButton({
+			Text = "Clear Harvested Samples",
+			DoubleClick = true,
+			Func = function()
+				TimingHarvester.clear()
+				harvestedList:SetValues({})
+				harvestedList:SetValue(nil)
+				harvestedList:Display()
+				refreshStatus()
+				Library:Notify("Cleared all harvested samples.")
+			end,
+		})
+end
+
 ---Initialize Module Manager section.
 ---@param groupbox table
 function BuilderTab.initModuleManagerSection(groupbox)
@@ -18249,6 +19084,7 @@ function BuilderTab.init(window)
 	BuilderTab.initModuleManagerSection(tab:AddDynamicGroupbox("Module Manager"))
 	BuilderTab.initLoggerSection(tab:AddDynamicGroupbox("Logger"))
 	BuilderTab.initCaptureSection(tab:AddDynamicGroupbox("Animation Capture"))
+	BuilderTab.initHarvesterSection(tab:AddDynamicGroupbox("Timing Harvester"))
 
 	-- Create builder sections.
 	BuilderTab.pbs = PartBuilderSection.new("Part", tab:AddDynamicTabbox(), SaveManager.ps, PartTiming.new())
