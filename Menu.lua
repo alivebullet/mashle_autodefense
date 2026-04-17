@@ -64,8 +64,46 @@ if LRM_UserNote then
 	)
 end
 
+local function isLegacyMenuScreenGui(screenGui)
+	if not screenGui or not screenGui:IsA("ScreenGui") or screenGui == Library.ScreenGui then
+		return false
+	end
+
+	if screenGui:GetAttribute("LycorisMenu") == true or screenGui.Name == "LycorisLinoriaGui" then
+		return true
+	end
+
+	for _, descendant in ipairs(screenGui:GetDescendants()) do
+		if descendant:IsA("TextLabel") or descendant:IsA("TextButton") or descendant:IsA("TextBox") then
+			local text = descendant.Text
+			if type(text) == "string" and string.find(text, "Linoria V2 | Type Soul", 1, true) then
+				return true
+			end
+		end
+	end
+
+	return false
+end
+
+local function cleanupLegacyMenus()
+	local parent = Library.ScreenGui and Library.ScreenGui.Parent
+	if not parent then
+		return
+	end
+
+	for _, child in ipairs(parent:GetChildren()) do
+		if isLegacyMenuScreenGui(child) then
+			pcall(function()
+				child:Destroy()
+			end)
+		end
+	end
+end
+
 ---Initialize menu.
 function Menu.init()
+	cleanupLegacyMenus()
+
 	-- Create window.
 	local window = Library:CreateWindow({
 		Title = MENU_TITLE,

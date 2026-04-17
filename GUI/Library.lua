@@ -19,6 +19,8 @@ return LPH_NO_VIRTUALIZE(function()
 
 	local ProtectGui = protectgui or (syn and syn.protect_gui) or function() end
 	local ScreenGui = CoreGuiManager.imark(Instance.new("ScreenGui"))
+	ScreenGui.Name = "LycorisLinoriaGui"
+	ScreenGui:SetAttribute("LycorisMenu", true)
 
 	ProtectGui(ScreenGui)
 
