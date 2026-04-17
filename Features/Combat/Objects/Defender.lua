@@ -663,12 +663,14 @@ Defender.handle = LPH_NO_VIRTUALIZE(function(self, timing, action, notify)
 		local parryStatus = AttributeListener.parryStatus()
 		local states = #parryStatus.activeStates > 0 and table.concat(parryStatus.activeStates, ",") or "-"
 		Defender.dbg(
-			"PARRY BLOCKED cparry()=false reason=%s remaining=%dms sinceAttempt=%s sinceSuccess=%s states=%s for '%s'",
+			"PARRY BLOCKED cparry()=false reason=%s remaining=%dms sinceAttempt=%s sinceSuccess=%s states=%s hud=%s path=%s for '%s'",
 			parryStatus.reason,
 			parryStatus.remainingMs or 0,
 			parryStatus.sinceAttemptMs and tostring(parryStatus.sinceAttemptMs) or "-",
 			parryStatus.sinceSuccessMs and tostring(parryStatus.sinceSuccessMs) or "-",
 			states,
+			parryStatus.hudText or "-",
+			parryStatus.hudPath or "-",
 			PP_SCRAMBLE_STR(timing.name)
 		)
 	end

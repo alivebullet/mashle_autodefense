@@ -8938,6 +8938,12 @@ local AttributeListener = {
 	lastParrySuccess = nil,
 	lastDash = nil,
 	lastKnock = nil,
+	hudParryLastPath = nil,
+	hudParryLastScanAt = 0,
+	hudParryLastSeenAt = nil,
+	hudParryRemainingMs = nil,
+	hudParrySeenEver = false,
+	hudParryText = nil,
 	stateValues = {},
 }
 
@@ -8967,6 +8973,7 @@ local stateMaid = Maid.new()
 
 local DEFAULT_SYNTHETIC_PARRY_COOLDOWN_MS = 500
 local DASH_COOLDOWN_S = 1750 / 1000
+local HUD_PARRY_SCAN_INTERVAL_S = 0.10
 
 ---@return number
 local function parryCooldownSeconds()
@@ -8977,6 +8984,91 @@ local function parryCooldownSeconds()
 	end
 
 	return cooldownMs / 1000
+end
+
+---@param instance Instance?
+---@return boolean
+local function guiTreeVisible(instance)
+	local current = instance
+
+	while current do
+		if current:IsA("GuiObject") and not current.Visible then
+			return false
+		end
+
+		if current:IsA("ScreenGui") and not current.Enabled then
+			return false
+		end
+
+		current = current.Parent
+	end
+
+	return true
+end
+
+---@param text string?
+---@return number?, number
+local function parseHudParryText(text)
+	if type(text) ~= "string" or text == "" then
+		return nil, 0
+	end
+
+	local exact = text:match("^%s*Parry%s*%(([%d%.]+)%)%s*$")
+	if exact then
+		return tonumber(exact), 20
+	end
+
+	local partial = text:match("[Pp]arry%s*%(([%d%.]+)%)")
+	if partial then
+		return tonumber(partial), 10
+	end
+
+	return nil, 0
+end
+
+---@return number?, string?, string?, boolean
+local function hudParryCooldown()
+	local now = tick()
+	if now - AttributeListener.hudParryLastScanAt < HUD_PARRY_SCAN_INTERVAL_S then
+		return AttributeListener.hudParryRemainingMs,
+			AttributeListener.hudParryText,
+			AttributeListener.hudParryLastPath,
+			AttributeListener.hudParrySeenEver
+	end
+
+	AttributeListener.hudParryLastScanAt = now
+
+	local localPlayer = players.LocalPlayer
+	local playerGui = localPlayer and localPlayer:FindFirstChild("PlayerGui")
+	local bestRemainingMs, bestText, bestPath, bestScore = nil, nil, nil, -1
+
+	if playerGui then
+		for _, descendant in ipairs(playerGui:GetDescendants()) do
+			if (descendant:IsA("TextLabel") or descendant:IsA("TextButton") or descendant:IsA("TextBox")) and guiTreeVisible(descendant) then
+				local seconds, score = parseHudParryText(descendant.Text)
+				if seconds and score > bestScore then
+					bestScore = score
+					bestRemainingMs = math.max(0, math.round(seconds * 1000))
+					bestText = descendant.Text
+					bestPath = descendant:GetFullName()
+				end
+			end
+		end
+	end
+
+	AttributeListener.hudParryRemainingMs = bestRemainingMs
+	AttributeListener.hudParryText = bestText
+	AttributeListener.hudParryLastPath = bestPath or AttributeListener.hudParryLastPath
+
+	if bestRemainingMs ~= nil then
+		AttributeListener.hudParrySeenEver = true
+		AttributeListener.hudParryLastSeenAt = now
+	end
+
+	return AttributeListener.hudParryRemainingMs,
+		AttributeListener.hudParryText,
+		AttributeListener.hudParryLastPath,
+		AttributeListener.hudParrySeenEver
 end
 
 -- BoolValues under character.CharacterState that we care about. When the .Value flips true,
@@ -9113,6 +9205,12 @@ local function onCharacterRemoving(character)
 	AttributeListener.lastParrySuccess = nil
 	AttributeListener.lastDash = nil
 	AttributeListener.lastKnock = nil
+	AttributeListener.hudParryLastPath = nil
+	AttributeListener.hudParryLastScanAt = 0
+	AttributeListener.hudParryLastSeenAt = nil
+	AttributeListener.hudParryRemainingMs = nil
+	AttributeListener.hudParrySeenEver = false
+	AttributeListener.hudParryText = nil
 	AttributeListener.stateValues = {}
 end
 
@@ -9159,6 +9257,23 @@ end
 ---@return table
 function AttributeListener.parryStatus()
 	local now = tick()
+	local hudRemainingMs, hudText, hudPath, hudSeenEver = hudParryCooldown()
+
+	if hudSeenEver then
+		return {
+			canParry = hudRemainingMs == nil or hudRemainingMs <= 0,
+			reason = hudRemainingMs and hudRemainingMs > 0 and "hud-cooldown" or "hud-ready",
+			remainingMs = hudRemainingMs or 0,
+			sinceAttemptMs = AttributeListener.lastParryAttempt and math.round((now - AttributeListener.lastParryAttempt) * 1000)
+				or nil,
+			sinceSuccessMs = AttributeListener.lastParrySuccess and math.round((now - AttributeListener.lastParrySuccess) * 1000)
+				or nil,
+			activeStates = AttributeListener.activeStates(),
+			hudPath = hudPath,
+			hudText = hudText,
+		}
+	end
+
 	local remainingMs = AttributeListener.parryRemainingMs()
 	local activeStates = AttributeListener.activeStates()
 	local reason = remainingMs > 0 and "synthetic-cooldown" or "ready"
@@ -9172,6 +9287,8 @@ function AttributeListener.parryStatus()
 		sinceSuccessMs = AttributeListener.lastParrySuccess and math.round((now - AttributeListener.lastParrySuccess) * 1000)
 			or nil,
 		activeStates = activeStates,
+		hudPath = hudPath,
+		hudText = hudText,
 	}
 end
 
@@ -12177,12 +12294,14 @@ Defender.handle = LPH_NO_VIRTUALIZE(function(self, timing, action, notify)
 		local parryStatus = AttributeListener.parryStatus()
 		local states = #parryStatus.activeStates > 0 and table.concat(parryStatus.activeStates, ",") or "-"
 		Defender.dbg(
-			"PARRY BLOCKED cparry()=false reason=%s remaining=%dms sinceAttempt=%s sinceSuccess=%s states=%s for '%s'",
+			"PARRY BLOCKED cparry()=false reason=%s remaining=%dms sinceAttempt=%s sinceSuccess=%s states=%s hud=%s path=%s for '%s'",
 			parryStatus.reason,
 			parryStatus.remainingMs or 0,
 			parryStatus.sinceAttemptMs and tostring(parryStatus.sinceAttemptMs) or "-",
 			parryStatus.sinceSuccessMs and tostring(parryStatus.sinceSuccessMs) or "-",
 			states,
+			parryStatus.hudText or "-",
+			parryStatus.hudPath or "-",
 			PP_SCRAMBLE_STR(timing.name)
 		)
 	end
