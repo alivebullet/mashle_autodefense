@@ -216,7 +216,7 @@ AnimatorDefender.valid = LPH_NO_VIRTUALIZE(function(self, timing, action)
 
 	if not Defender.valid(self, timing, action) then
 		if dbg then
-			Logger.warn("[DefDbg] Defender.valid() base check FAILED for '%s'.", PP_SCRAMBLE_STR(timing.name))
+			Defender.dbg("VALID base check FAILED for '%s'", PP_SCRAMBLE_STR(timing.name))
 		end
 		return false
 	end
@@ -232,8 +232,12 @@ AnimatorDefender.valid = LPH_NO_VIRTUALIZE(function(self, timing, action)
 	local target = self:target(self.entity)
 	if not target then
 		if dbg then
-			Logger.warn("[DefDbg] Targeting.find() returned nil for '%s'. Entity may not be in workspace.Entities, IgnoreMobs may be on, or distance/FOV limits exceeded.",
-				self.entity.Name)
+			local ents = workspace:FindFirstChild("Entities")
+			local parentPath = self.entity.Parent and self.entity.Parent:GetFullName() or "nil"
+			Defender.dbg("TARGET nil entity='%s' parent='%s' entitiesFolder=%s ignoreMobs=%s",
+				self.entity.Name, parentPath,
+				tostring(ents ~= nil),
+				tostring(Configuration.expectToggleValue("IgnoreMobs")))
 		end
 		return self:notify(timing, "Not a viable target.")
 	end
@@ -245,7 +249,7 @@ AnimatorDefender.valid = LPH_NO_VIRTUALIZE(function(self, timing, action)
 
 	if self:stopped(self.track, timing) then
 		if dbg then
-			Logger.warn("[DefDbg] Track stopped for '%s'.", PP_SCRAMBLE_STR(timing.name))
+			Defender.dbg("STOPPED track for '%s'", PP_SCRAMBLE_STR(timing.name))
 		end
 		return false
 	end
@@ -262,7 +266,7 @@ AnimatorDefender.valid = LPH_NO_VIRTUALIZE(function(self, timing, action)
 	local hc = self:hc(options, timing.duih and info or nil)
 	if hc then
 		if dbg then
-			Logger.warn("[DefDbg] Hitbox check PASSED for '%s'.", PP_SCRAMBLE_STR(timing.name))
+			Defender.dbg("HITBOX PASS for '%s'", PP_SCRAMBLE_STR(timing.name))
 		end
 		return true
 	end
@@ -270,13 +274,13 @@ AnimatorDefender.valid = LPH_NO_VIRTUALIZE(function(self, timing, action)
 	local pc = self:fpc(timing, options)
 	if pc then
 		if dbg then
-			Logger.warn("[DefDbg] Facing prediction check PASSED for '%s'.", PP_SCRAMBLE_STR(timing.name))
+			Defender.dbg("FACING PASS for '%s'", PP_SCRAMBLE_STR(timing.name))
 		end
 		return true
 	end
 
 	if dbg then
-		Logger.warn("[DefDbg] HITBOX MISS for '%s' (dist=%.1f, hitbox=%s).",
+		Defender.dbg("HITBOX MISS '%s' dist=%.1f hitbox=%s",
 			PP_SCRAMBLE_STR(timing.name), self:distance(self.entity) or -1, tostring(timing.hitbox))
 	end
 
@@ -436,7 +440,7 @@ AnimatorDefender.process = LPH_NO_VIRTUALIZE(function(self, track)
 
 	if not self:pvalidate(track) then
 		if dbg then
-			Logger.warn("[DefDbg] Skipped track (pvalidate false): priority=%s", tostring(track.Priority))
+			Defender.dbg("SKIP pvalidate=false priority=%s entity='%s'", tostring(track.Priority), self.entity.Name)
 		end
 		return
 	end
@@ -454,8 +458,8 @@ AnimatorDefender.process = LPH_NO_VIRTUALIZE(function(self, track)
 	local distance = self:distance(self.entity)
 
 	if dbg then
-		Logger.warn("[DefDbg] AnimPlayed entity='%s' aid=%s dist=%.1f spd=%.2f len=%.3f",
-			self.entity.Name, aid, distance or -1, track.Speed, track.Length)
+		Defender.dbg("ANIM entity='%s' aid=%s dist=%.1f spd=%.2f len=%.3f pri=%s",
+			self.entity.Name, aid, distance or -1, track.Speed, track.Length, tostring(track.Priority))
 	end
 
 	-- In logging range? 0 on max = no upper bound (matches AnimationLogger semantics).
@@ -478,14 +482,13 @@ AnimatorDefender.process = LPH_NO_VIRTUALIZE(function(self, track)
 	local timing = self:initial(self.entity, SaveManager.as, self.entity.Name, aid)
 	if not timing then
 		if dbg then
-			Logger.warn("[DefDbg] No timing found for aid=%s (entity='%s', dist=%.1f). Miss logged.",
-				aid, self.entity.Name, distance or -1)
+			Defender.dbg("MISS no timing for aid=%s entity='%s' dist=%.1f", aid, self.entity.Name, distance or -1)
 		end
 		return
 	end
 
 	if dbg then
-		Logger.warn("[DefDbg] Timing matched: '%s' (actions=%d, imdd=%d, imxd=%d)",
+		Defender.dbg("MATCH timing='%s' actions=%d imdd=%d imxd=%d",
 			PP_SCRAMBLE_STR(timing.name), timing.actions:count(),
 			PP_SCRAMBLE_NUM(timing.imdd), PP_SCRAMBLE_NUM(timing.imxd))
 	end
@@ -496,7 +499,7 @@ AnimatorDefender.process = LPH_NO_VIRTUALIZE(function(self, track)
 
 	if not Configuration.expectToggleValue("EnableAutoDefense") then
 		if dbg then
-			Logger.warn("[DefDbg] Auto-defense is DISABLED. Skipping action scheduling.")
+			Defender.dbg("SKIP auto-defense DISABLED for timing='%s'", PP_SCRAMBLE_STR(timing.name))
 		end
 		return
 	end
@@ -504,7 +507,7 @@ AnimatorDefender.process = LPH_NO_VIRTUALIZE(function(self, track)
 	local humanoidRootPart = self.entity:FindFirstChild("HumanoidRootPart")
 	if not humanoidRootPart then
 		if dbg then
-			Logger.warn("[DefDbg] Entity '%s' has no HumanoidRootPart.", self.entity.Name)
+			Defender.dbg("SKIP entity='%s' has no HumanoidRootPart", self.entity.Name)
 		end
 		return
 	end

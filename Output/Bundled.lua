@@ -10948,8 +10948,16 @@ end)
 ---@param action Action
 ---@param notify boolean
 Defender.handle = LPH_NO_VIRTUALIZE(function(self, timing, action, notify)
+	local dbg = Configuration.expectToggleValue("EnableDefenseDebug")
+
 	if not self:valid(timing, action) then
 		return
+	end
+
+	if dbg then
+		Defender.dbg("HANDLE executing type='%s' timing='%s' when=%dms",
+			PP_SCRAMBLE_STR(action._type), PP_SCRAMBLE_STR(timing.name),
+			math.round((action:when() or 0) * 1000))
 	end
 
 	if not notify then
@@ -10993,12 +11001,19 @@ Defender.handle = LPH_NO_VIRTUALIZE(function(self, timing, action, notify)
 	-- We'll assume that we're in the parry state. There's no other type.
 	if AttributeListener.cparry() then
 		if timing.nfdb or not AttributeListener.cdash() or not dashReplacement then
+			if dbg then
+				Defender.dbg("PARRY FIRED for '%s'", PP_SCRAMBLE_STR(timing.name))
+			end
 			return InputClient.parry()
 		end
 
 		self:notify(timing, "Action type 'Parry' replaced to 'Dash' type.")
 
 		return InputClient.dash()
+	end
+
+	if dbg then
+		Defender.dbg("PARRY BLOCKED cparry()=false (cooldown) for '%s'", PP_SCRAMBLE_STR(timing.name))
 	end
 
 	---Block fallback function. Returns whether the fallback was successful.
@@ -11237,6 +11252,32 @@ function Defender.new()
 	self.markers = {}
 	self.lvisualization = os.clock()
 	return self
+end
+
+-- Shared debug log buffer.
+Defender._debugLog = {}
+Defender._debugLogMax = 500
+
+---Append a line to the shared debug log (ring buffer).
+---@param fmt string
+function Defender.dbg(fmt, ...)
+	local line = string.format("[%.3f] %s", os.clock(), string.format(fmt, ...))
+	local log = Defender._debugLog
+	log[#log + 1] = line
+	if #log > Defender._debugLogMax then
+		table.remove(log, 1)
+	end
+end
+
+---Get the full debug log as a single string.
+---@return string
+function Defender.getDebugLog()
+	return table.concat(Defender._debugLog, "\n")
+end
+
+---Clear the debug log.
+function Defender.clearDebugLog()
+	Defender._debugLog = {}
 end
 
 -- Return Defender module.
@@ -12297,7 +12338,7 @@ AnimatorDefender.valid = LPH_NO_VIRTUALIZE(function(self, timing, action)
 
 	if not Defender.valid(self, timing, action) then
 		if dbg then
-			Logger.warn("[DefDbg] Defender.valid() base check FAILED for '%s'.", PP_SCRAMBLE_STR(timing.name))
+			Defender.dbg("VALID base check FAILED for '%s'", PP_SCRAMBLE_STR(timing.name))
 		end
 		return false
 	end
@@ -12313,8 +12354,12 @@ AnimatorDefender.valid = LPH_NO_VIRTUALIZE(function(self, timing, action)
 	local target = self:target(self.entity)
 	if not target then
 		if dbg then
-			Logger.warn("[DefDbg] Targeting.find() returned nil for '%s'. Entity may not be in workspace.Entities, IgnoreMobs may be on, or distance/FOV limits exceeded.",
-				self.entity.Name)
+			local ents = workspace:FindFirstChild("Entities")
+			local parentPath = self.entity.Parent and self.entity.Parent:GetFullName() or "nil"
+			Defender.dbg("TARGET nil entity='%s' parent='%s' entitiesFolder=%s ignoreMobs=%s",
+				self.entity.Name, parentPath,
+				tostring(ents ~= nil),
+				tostring(Configuration.expectToggleValue("IgnoreMobs")))
 		end
 		return self:notify(timing, "Not a viable target.")
 	end
@@ -12326,7 +12371,7 @@ AnimatorDefender.valid = LPH_NO_VIRTUALIZE(function(self, timing, action)
 
 	if self:stopped(self.track, timing) then
 		if dbg then
-			Logger.warn("[DefDbg] Track stopped for '%s'.", PP_SCRAMBLE_STR(timing.name))
+			Defender.dbg("STOPPED track for '%s'", PP_SCRAMBLE_STR(timing.name))
 		end
 		return false
 	end
@@ -12343,7 +12388,7 @@ AnimatorDefender.valid = LPH_NO_VIRTUALIZE(function(self, timing, action)
 	local hc = self:hc(options, timing.duih and info or nil)
 	if hc then
 		if dbg then
-			Logger.warn("[DefDbg] Hitbox check PASSED for '%s'.", PP_SCRAMBLE_STR(timing.name))
+			Defender.dbg("HITBOX PASS for '%s'", PP_SCRAMBLE_STR(timing.name))
 		end
 		return true
 	end
@@ -12351,13 +12396,13 @@ AnimatorDefender.valid = LPH_NO_VIRTUALIZE(function(self, timing, action)
 	local pc = self:fpc(timing, options)
 	if pc then
 		if dbg then
-			Logger.warn("[DefDbg] Facing prediction check PASSED for '%s'.", PP_SCRAMBLE_STR(timing.name))
+			Defender.dbg("FACING PASS for '%s'", PP_SCRAMBLE_STR(timing.name))
 		end
 		return true
 	end
 
 	if dbg then
-		Logger.warn("[DefDbg] HITBOX MISS for '%s' (dist=%.1f, hitbox=%s).",
+		Defender.dbg("HITBOX MISS '%s' dist=%.1f hitbox=%s",
 			PP_SCRAMBLE_STR(timing.name), self:distance(self.entity) or -1, tostring(timing.hitbox))
 	end
 
@@ -12517,7 +12562,7 @@ AnimatorDefender.process = LPH_NO_VIRTUALIZE(function(self, track)
 
 	if not self:pvalidate(track) then
 		if dbg then
-			Logger.warn("[DefDbg] Skipped track (pvalidate false): priority=%s", tostring(track.Priority))
+			Defender.dbg("SKIP pvalidate=false priority=%s entity='%s'", tostring(track.Priority), self.entity.Name)
 		end
 		return
 	end
@@ -12535,8 +12580,8 @@ AnimatorDefender.process = LPH_NO_VIRTUALIZE(function(self, track)
 	local distance = self:distance(self.entity)
 
 	if dbg then
-		Logger.warn("[DefDbg] AnimPlayed entity='%s' aid=%s dist=%.1f spd=%.2f len=%.3f",
-			self.entity.Name, aid, distance or -1, track.Speed, track.Length)
+		Defender.dbg("ANIM entity='%s' aid=%s dist=%.1f spd=%.2f len=%.3f pri=%s",
+			self.entity.Name, aid, distance or -1, track.Speed, track.Length, tostring(track.Priority))
 	end
 
 	-- In logging range? 0 on max = no upper bound (matches AnimationLogger semantics).
@@ -12559,14 +12604,13 @@ AnimatorDefender.process = LPH_NO_VIRTUALIZE(function(self, track)
 	local timing = self:initial(self.entity, SaveManager.as, self.entity.Name, aid)
 	if not timing then
 		if dbg then
-			Logger.warn("[DefDbg] No timing found for aid=%s (entity='%s', dist=%.1f). Miss logged.",
-				aid, self.entity.Name, distance or -1)
+			Defender.dbg("MISS no timing for aid=%s entity='%s' dist=%.1f", aid, self.entity.Name, distance or -1)
 		end
 		return
 	end
 
 	if dbg then
-		Logger.warn("[DefDbg] Timing matched: '%s' (actions=%d, imdd=%d, imxd=%d)",
+		Defender.dbg("MATCH timing='%s' actions=%d imdd=%d imxd=%d",
 			PP_SCRAMBLE_STR(timing.name), timing.actions:count(),
 			PP_SCRAMBLE_NUM(timing.imdd), PP_SCRAMBLE_NUM(timing.imxd))
 	end
@@ -12577,7 +12621,7 @@ AnimatorDefender.process = LPH_NO_VIRTUALIZE(function(self, track)
 
 	if not Configuration.expectToggleValue("EnableAutoDefense") then
 		if dbg then
-			Logger.warn("[DefDbg] Auto-defense is DISABLED. Skipping action scheduling.")
+			Defender.dbg("SKIP auto-defense DISABLED for timing='%s'", PP_SCRAMBLE_STR(timing.name))
 		end
 		return
 	end
@@ -12585,7 +12629,7 @@ AnimatorDefender.process = LPH_NO_VIRTUALIZE(function(self, track)
 	local humanoidRootPart = self.entity:FindFirstChild("HumanoidRootPart")
 	if not humanoidRootPart then
 		if dbg then
-			Logger.warn("[DefDbg] Entity '%s' has no HumanoidRootPart.", self.entity.Name)
+			Defender.dbg("SKIP entity='%s' has no HumanoidRootPart", self.entity.Name)
 		end
 		return
 	end
@@ -20917,6 +20961,9 @@ local Logger = require("Utility/Logger")
 ---@module Features.Combat.Defense
 local Defense = require("Features/Combat/Defense")
 
+---@module Features.Combat.Objects.Defender
+local Defender = require("Features/Combat/Objects/Defender")
+
 -- Initialize combat targeting section.
 ---@param tab table
 function CombatTab.initCombatTargetingSection(tab)
@@ -21047,7 +21094,59 @@ function CombatTab.initAutoDefenseSection(groupbox)
 		Text = "Defense Debug Logger",
 		Default = false,
 		Tooltip = "Verbose logging of every decision the auto-defense makes (animation seen, timing lookup, hitbox check, etc).",
+		Callback = function(value)
+			if value then
+				Defender.clearDebugLog()
+
+				-- Dump workspace diagnostics at enable time.
+				local ents = workspace:FindFirstChild("Entities")
+				Defender.dbg("=== DIAGNOSTIC DUMP ===")
+				Defender.dbg("PlaceId=%s GameId=%s", tostring(game.PlaceId), tostring(game.GameId))
+				Defender.dbg("workspace.Entities exists: %s", tostring(ents ~= nil))
+
+				-- List all top-level workspace folders that contain models with Humanoids.
+				for _, child in next, workspace:GetChildren() do
+					if child:IsA("Folder") or child:IsA("Model") then
+						local humanoidCount = 0
+						for _, desc in next, child:GetDescendants() do
+							if desc:IsA("Humanoid") then
+								humanoidCount = humanoidCount + 1
+							end
+						end
+						if humanoidCount > 0 then
+							Defender.dbg("  workspace.%s (%s): %d humanoids", child.Name, child.ClassName, humanoidCount)
+						end
+					end
+				end
+
+				Defender.dbg("=== END DIAGNOSTIC ===")
+			end
+		end,
 	})
+
+	autoDefenseDepBox
+		:AddButton({
+			Text = "Copy Debug Log",
+			Func = function()
+				local log = Defender.getDebugLog()
+				if #log == 0 then
+					return Logger.notify("Debug log is empty. Enable Defense Debug Logger and let it run.")
+				end
+				if setclipboard then
+					setclipboard(log)
+					Logger.notify("Copied %d lines to clipboard.", #Defender._debugLog)
+				else
+					Logger.notify("setclipboard not available on this executor.")
+				end
+			end,
+		})
+		:AddButton({
+			Text = "Clear Debug Log",
+			Func = function()
+				Defender.clearDebugLog()
+				Logger.notify("Debug log cleared.")
+			end,
+		})
 
 	autoDefenseDepBox:AddToggle("EnableVisualizations", {
 		Text = "Enable Visualizations",

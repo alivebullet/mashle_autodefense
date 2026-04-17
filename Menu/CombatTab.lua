@@ -7,6 +7,9 @@ local Logger = require("Utility/Logger")
 ---@module Features.Combat.Defense
 local Defense = require("Features/Combat/Defense")
 
+---@module Features.Combat.Objects.Defender
+local Defender = require("Features/Combat/Objects/Defender")
+
 -- Initialize combat targeting section.
 ---@param tab table
 function CombatTab.initCombatTargetingSection(tab)
@@ -137,7 +140,59 @@ function CombatTab.initAutoDefenseSection(groupbox)
 		Text = "Defense Debug Logger",
 		Default = false,
 		Tooltip = "Verbose logging of every decision the auto-defense makes (animation seen, timing lookup, hitbox check, etc).",
+		Callback = function(value)
+			if value then
+				Defender.clearDebugLog()
+
+				-- Dump workspace diagnostics at enable time.
+				local ents = workspace:FindFirstChild("Entities")
+				Defender.dbg("=== DIAGNOSTIC DUMP ===")
+				Defender.dbg("PlaceId=%s GameId=%s", tostring(game.PlaceId), tostring(game.GameId))
+				Defender.dbg("workspace.Entities exists: %s", tostring(ents ~= nil))
+
+				-- List all top-level workspace folders that contain models with Humanoids.
+				for _, child in next, workspace:GetChildren() do
+					if child:IsA("Folder") or child:IsA("Model") then
+						local humanoidCount = 0
+						for _, desc in next, child:GetDescendants() do
+							if desc:IsA("Humanoid") then
+								humanoidCount = humanoidCount + 1
+							end
+						end
+						if humanoidCount > 0 then
+							Defender.dbg("  workspace.%s (%s): %d humanoids", child.Name, child.ClassName, humanoidCount)
+						end
+					end
+				end
+
+				Defender.dbg("=== END DIAGNOSTIC ===")
+			end
+		end,
 	})
+
+	autoDefenseDepBox
+		:AddButton({
+			Text = "Copy Debug Log",
+			Func = function()
+				local log = Defender.getDebugLog()
+				if #log == 0 then
+					return Logger.notify("Debug log is empty. Enable Defense Debug Logger and let it run.")
+				end
+				if setclipboard then
+					setclipboard(log)
+					Logger.notify("Copied %d lines to clipboard.", #Defender._debugLog)
+				else
+					Logger.notify("setclipboard not available on this executor.")
+				end
+			end,
+		})
+		:AddButton({
+			Text = "Clear Debug Log",
+			Func = function()
+				Defender.clearDebugLog()
+				Logger.notify("Debug log cleared.")
+			end,
+		})
 
 	autoDefenseDepBox:AddToggle("EnableVisualizations", {
 		Text = "Enable Visualizations",

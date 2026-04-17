@@ -553,8 +553,16 @@ end)
 ---@param action Action
 ---@param notify boolean
 Defender.handle = LPH_NO_VIRTUALIZE(function(self, timing, action, notify)
+	local dbg = Configuration.expectToggleValue("EnableDefenseDebug")
+
 	if not self:valid(timing, action) then
 		return
+	end
+
+	if dbg then
+		Defender.dbg("HANDLE executing type='%s' timing='%s' when=%dms",
+			PP_SCRAMBLE_STR(action._type), PP_SCRAMBLE_STR(timing.name),
+			math.round((action:when() or 0) * 1000))
 	end
 
 	if not notify then
@@ -598,12 +606,19 @@ Defender.handle = LPH_NO_VIRTUALIZE(function(self, timing, action, notify)
 	-- We'll assume that we're in the parry state. There's no other type.
 	if AttributeListener.cparry() then
 		if timing.nfdb or not AttributeListener.cdash() or not dashReplacement then
+			if dbg then
+				Defender.dbg("PARRY FIRED for '%s'", PP_SCRAMBLE_STR(timing.name))
+			end
 			return InputClient.parry()
 		end
 
 		self:notify(timing, "Action type 'Parry' replaced to 'Dash' type.")
 
 		return InputClient.dash()
+	end
+
+	if dbg then
+		Defender.dbg("PARRY BLOCKED cparry()=false (cooldown) for '%s'", PP_SCRAMBLE_STR(timing.name))
 	end
 
 	---Block fallback function. Returns whether the fallback was successful.
@@ -842,6 +857,32 @@ function Defender.new()
 	self.markers = {}
 	self.lvisualization = os.clock()
 	return self
+end
+
+-- Shared debug log buffer.
+Defender._debugLog = {}
+Defender._debugLogMax = 500
+
+---Append a line to the shared debug log (ring buffer).
+---@param fmt string
+function Defender.dbg(fmt, ...)
+	local line = string.format("[%.3f] %s", os.clock(), string.format(fmt, ...))
+	local log = Defender._debugLog
+	log[#log + 1] = line
+	if #log > Defender._debugLogMax then
+		table.remove(log, 1)
+	end
+end
+
+---Get the full debug log as a single string.
+---@return string
+function Defender.getDebugLog()
+	return table.concat(Defender._debugLog, "\n")
+end
+
+---Clear the debug log.
+function Defender.clearDebugLog()
+	Defender._debugLog = {}
 end
 
 -- Return Defender module.
