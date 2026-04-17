@@ -11144,6 +11144,7 @@ local MAX_VISUALIZATION_TIME = 5.0
 local MAX_REPEAT_WAIT = 10.0
 local PREDICTION_LENIENCY_MULTI = 5.0
 local NOTIFY_DEDUP_WINDOW = 1.0
+local DEFAULT_AUTO_PARRY_LEAD_MS = 45
 
 -- Notification de-duplication.
 local lastNotifyTimes = {}
@@ -11158,10 +11159,10 @@ local function parryLeadSeconds(action)
 
 	local leadMs = Configuration.expectOptionValue("AutoParryLeadMs")
 	if type(leadMs) ~= "number" or leadMs <= 0 then
-		return 0
+		leadMs = DEFAULT_AUTO_PARRY_LEAD_MS
 	end
 
-	return leadMs / 1000
+	return math.clamp(leadMs, 0, 150) / 1000
 end
 
 ---Log a miss to the UI library with distance check.
@@ -11667,7 +11668,9 @@ end)
 Defender.handle = LPH_NO_VIRTUALIZE(function(self, timing, action, notify)
 	local dbg = Configuration.expectToggleValue("EnableDefenseDebug")
 	local actionType = PP_SCRAMBLE_STR(action._type)
+	local actionWhenMs = math.round((action:when() or 0) * 1000)
 	local actionLeadMs = math.round(parryLeadSeconds(action) * 1000)
+	local scheduledWhenMs = math.max(0, actionWhenMs - actionLeadMs)
 
 	if not self:valid(timing, action) then
 		return
@@ -11675,13 +11678,13 @@ Defender.handle = LPH_NO_VIRTUALIZE(function(self, timing, action, notify)
 
 	if dbg then
 		if actionType == "Parry" and actionLeadMs > 0 then
-			Defender.dbg("HANDLE executing type='%s' timing='%s' when=%dms lead=%dms",
+			Defender.dbg("HANDLE executing type='%s' timing='%s' when=%dms scheduled=%dms lead=%dms",
 				actionType, PP_SCRAMBLE_STR(timing.name),
-				math.round((action:when() or 0) * 1000), actionLeadMs)
+				actionWhenMs, scheduledWhenMs, actionLeadMs)
 		else
 			Defender.dbg("HANDLE executing type='%s' timing='%s' when=%dms",
 				actionType, PP_SCRAMBLE_STR(timing.name),
-				math.round((action:when() or 0) * 1000))
+				actionWhenMs)
 		end
 	end
 
@@ -13627,10 +13630,20 @@ return LPH_NO_VIRTUALIZE(function()
 	-- Key: animation ID, Value: { id, entityName, length, speed, keyframes = { { name, timePosition } }, capturedAt }
 	local capturedAnimations = {}
 
+	-- Most recent source entity seen for each animation id, used by the visualizer.
+	local previewSources = {}
+
 	-- Animations currently playing on nearby entities (for damage-hit capture).
 	-- Key: animation ID, Value: { track = AnimationTrack, entity = Model }
 	-- Note: only the most recent track per aid is stored.
 	local activePlayingTracks = {}
+
+	---Return whether a model has a usable part for distance or viewport preview.
+	---@param model Model?
+	---@return boolean
+	local function hasRenderablePart(model)
+		return model ~= nil and (model.PrimaryPart ~= nil or model:FindFirstChildWhichIsA("BasePart", true) ~= nil)
+	end
 
 	---Get distance from local player to an entity.
 	---@param entity Model
@@ -13685,13 +13698,24 @@ return LPH_NO_VIRTUALIZE(function()
 	---@return Model?
 	local function getEntityFromAnimator(animator)
 		local current = animator.Parent
+		local fallback = nil
 		while current do
-			if current:IsA("Model") and current:FindFirstChildWhichIsA("Humanoid") then
-				return current
+			if current:IsA("Model") then
+				if hasRenderablePart(current) then
+					fallback = current
+				end
+
+				if current:FindFirstChildWhichIsA("Humanoid") and hasRenderablePart(current) then
+					return current
+				end
+
+				if current:FindFirstChildWhichIsA("AnimationController") and hasRenderablePart(current) then
+					return current
+				end
 			end
 			current = current.Parent
 		end
-		return nil
+		return fallback
 	end
 
 	---Track an animator and log its animations.
@@ -13722,6 +13746,8 @@ return LPH_NO_VIRTUALIZE(function()
 			if TimingHarvester.isBanned(aid) then
 				return
 			end
+
+			previewSources[aid] = entity
 
 			-- Feed the timing harvester unconditionally (self-gated by EnableTimingHarvester + its own distance filter).
 			TimingHarvester.onAnimationStart(aid, entity, track)
@@ -13873,6 +13899,23 @@ return LPH_NO_VIRTUALIZE(function()
 	---@return table
 	function AnimationLogger.getAllCaptured()
 		return capturedAnimations
+	end
+
+	---Get the latest known source entity for an animation id.
+	---@param aid string
+	---@return Model?
+	function AnimationLogger.getPreviewSource(aid)
+		local source = previewSources[aid]
+		if typeof(source) ~= "Instance" or not source:IsA("Model") then
+			return nil
+		end
+
+		if not source.Parent then
+			previewSources[aid] = nil
+			return nil
+		end
+
+		return source
 	end
 
 	---Clear all captured animations.
@@ -14128,6 +14171,7 @@ return LPH_NO_VIRTUALIZE(function()
 		end
 
 		trackedAnimators = {}
+		previewSources = {}
 		loggerMaid:clean()
 		isInitialized = false
 	end
@@ -15853,6 +15897,9 @@ return LPH_NO_VIRTUALIZE(function()
 	---@module Utility.CoreGuiManager
 	local CoreGuiManager = require("Utility/CoreGuiManager")
 
+	---@module Features.Game.AnimationLogger
+	local AnimationLogger = require("Features/Game/AnimationLogger")
+
 	-- Visualizer maid.
 	local visualizerMaid = Maid.new()
 
@@ -16106,6 +16153,30 @@ return LPH_NO_VIRTUALIZE(function()
 	local timeElapsed = 0.0
 	local isInitialized = false
 
+	---Return the best source model to preview an animation on.
+	---@param aid string
+	---@return Model?
+	local function previewSourceForAid(aid)
+		local source = AnimationLogger.getPreviewSource(aid)
+		if typeof(source) == "Instance" and source:IsA("Model") then
+			return source
+		end
+
+		local localCharacter = players.LocalPlayer and players.LocalPlayer.Character
+		if typeof(localCharacter) == "Instance" and localCharacter:IsA("Model") then
+			return localCharacter
+		end
+
+		return nil
+	end
+
+	---Return a model pivot part.
+	---@param model Model
+	---@return BasePart?
+	local function pivotPart(model)
+		return model.PrimaryPart or model:FindFirstChildWhichIsA("BasePart", true)
+	end
+
 	---Map slider value.
 	---@param value number
 	---@param min number
@@ -16127,10 +16198,9 @@ return LPH_NO_VIRTUALIZE(function()
 		-- Empty out previous data.
 		currentTrack = nil
 
-		-- Get the local player's character as the entity.
-		local character = players.LocalPlayer and players.LocalPlayer.Character
-		if not character then
-			return AnimationVisualizer.message("No Character Found")
+		local sourceEntity = previewSourceForAid(animationTextbox.Text)
+		if not sourceEntity then
+			return AnimationVisualizer.message("No Preview Source Found")
 		end
 
 		-- Remove all previously loaded models.
@@ -16143,10 +16213,10 @@ return LPH_NO_VIRTUALIZE(function()
 		end
 
 		-- Archivable.
-		character.Archivable = true
+		sourceEntity.Archivable = true
 
 		-- Load the model & center it.
-		local entity = character:Clone()
+		local entity = sourceEntity:Clone()
 		if not entity then
 			return AnimationVisualizer.message("Failed To Clone Entity")
 		end
@@ -16154,15 +16224,19 @@ return LPH_NO_VIRTUALIZE(function()
 		entity.Parent = worldModel
 		entity:PivotTo(CFrame.new(0, 0, 0))
 
-		-- Fetch the primary part. If it does not exist, then the entity has been unloaded.
-		if not entity.PrimaryPart then
+		local root = pivotPart(entity)
+		if not root then
 			return AnimationVisualizer.message("No Primary Part Found")
+		end
+
+		if not entity.PrimaryPart then
+			entity.PrimaryPart = root
 		end
 
 		-- Setup camera.
 		local _, bbs = entity:GetBoundingBox()
 		camera.CFrame =
-			CFrame.lookAt(entity.PrimaryPart.Position - Vector3.new(0, 0, bbs.Magnitude), entity.PrimaryPart.Position)
+			CFrame.lookAt(root.Position - Vector3.new(0, 0, bbs.Magnitude), root.Position)
 
 		-- Fetch animator.
 		local animator = entity:FindFirstChildWhichIsA("Animator", true)

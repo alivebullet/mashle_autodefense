@@ -15,6 +15,9 @@ return LPH_NO_VIRTUALIZE(function()
 	---@module Utility.CoreGuiManager
 	local CoreGuiManager = require("Utility/CoreGuiManager")
 
+	---@module Features.Game.AnimationLogger
+	local AnimationLogger = require("Features/Game/AnimationLogger")
+
 	-- Visualizer maid.
 	local visualizerMaid = Maid.new()
 
@@ -268,6 +271,30 @@ return LPH_NO_VIRTUALIZE(function()
 	local timeElapsed = 0.0
 	local isInitialized = false
 
+	---Return the best source model to preview an animation on.
+	---@param aid string
+	---@return Model?
+	local function previewSourceForAid(aid)
+		local source = AnimationLogger.getPreviewSource(aid)
+		if typeof(source) == "Instance" and source:IsA("Model") then
+			return source
+		end
+
+		local localCharacter = players.LocalPlayer and players.LocalPlayer.Character
+		if typeof(localCharacter) == "Instance" and localCharacter:IsA("Model") then
+			return localCharacter
+		end
+
+		return nil
+	end
+
+	---Return a model pivot part.
+	---@param model Model
+	---@return BasePart?
+	local function pivotPart(model)
+		return model.PrimaryPart or model:FindFirstChildWhichIsA("BasePart", true)
+	end
+
 	---Map slider value.
 	---@param value number
 	---@param min number
@@ -289,10 +316,9 @@ return LPH_NO_VIRTUALIZE(function()
 		-- Empty out previous data.
 		currentTrack = nil
 
-		-- Get the local player's character as the entity.
-		local character = players.LocalPlayer and players.LocalPlayer.Character
-		if not character then
-			return AnimationVisualizer.message("No Character Found")
+		local sourceEntity = previewSourceForAid(animationTextbox.Text)
+		if not sourceEntity then
+			return AnimationVisualizer.message("No Preview Source Found")
 		end
 
 		-- Remove all previously loaded models.
@@ -305,10 +331,10 @@ return LPH_NO_VIRTUALIZE(function()
 		end
 
 		-- Archivable.
-		character.Archivable = true
+		sourceEntity.Archivable = true
 
 		-- Load the model & center it.
-		local entity = character:Clone()
+		local entity = sourceEntity:Clone()
 		if not entity then
 			return AnimationVisualizer.message("Failed To Clone Entity")
 		end
@@ -316,15 +342,19 @@ return LPH_NO_VIRTUALIZE(function()
 		entity.Parent = worldModel
 		entity:PivotTo(CFrame.new(0, 0, 0))
 
-		-- Fetch the primary part. If it does not exist, then the entity has been unloaded.
-		if not entity.PrimaryPart then
+		local root = pivotPart(entity)
+		if not root then
 			return AnimationVisualizer.message("No Primary Part Found")
+		end
+
+		if not entity.PrimaryPart then
+			entity.PrimaryPart = root
 		end
 
 		-- Setup camera.
 		local _, bbs = entity:GetBoundingBox()
 		camera.CFrame =
-			CFrame.lookAt(entity.PrimaryPart.Position - Vector3.new(0, 0, bbs.Magnitude), entity.PrimaryPart.Position)
+			CFrame.lookAt(root.Position - Vector3.new(0, 0, bbs.Magnitude), root.Position)
 
 		-- Fetch animator.
 		local animator = entity:FindFirstChildWhichIsA("Animator", true)

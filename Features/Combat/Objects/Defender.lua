@@ -63,6 +63,7 @@ local MAX_VISUALIZATION_TIME = 5.0
 local MAX_REPEAT_WAIT = 10.0
 local PREDICTION_LENIENCY_MULTI = 5.0
 local NOTIFY_DEDUP_WINDOW = 1.0
+local DEFAULT_AUTO_PARRY_LEAD_MS = 45
 
 -- Notification de-duplication.
 local lastNotifyTimes = {}
@@ -77,10 +78,10 @@ local function parryLeadSeconds(action)
 
 	local leadMs = Configuration.expectOptionValue("AutoParryLeadMs")
 	if type(leadMs) ~= "number" or leadMs <= 0 then
-		return 0
+		leadMs = DEFAULT_AUTO_PARRY_LEAD_MS
 	end
 
-	return leadMs / 1000
+	return math.clamp(leadMs, 0, 150) / 1000
 end
 
 ---Log a miss to the UI library with distance check.
@@ -586,7 +587,9 @@ end)
 Defender.handle = LPH_NO_VIRTUALIZE(function(self, timing, action, notify)
 	local dbg = Configuration.expectToggleValue("EnableDefenseDebug")
 	local actionType = PP_SCRAMBLE_STR(action._type)
+	local actionWhenMs = math.round((action:when() or 0) * 1000)
 	local actionLeadMs = math.round(parryLeadSeconds(action) * 1000)
+	local scheduledWhenMs = math.max(0, actionWhenMs - actionLeadMs)
 
 	if not self:valid(timing, action) then
 		return
@@ -594,13 +597,13 @@ Defender.handle = LPH_NO_VIRTUALIZE(function(self, timing, action, notify)
 
 	if dbg then
 		if actionType == "Parry" and actionLeadMs > 0 then
-			Defender.dbg("HANDLE executing type='%s' timing='%s' when=%dms lead=%dms",
+			Defender.dbg("HANDLE executing type='%s' timing='%s' when=%dms scheduled=%dms lead=%dms",
 				actionType, PP_SCRAMBLE_STR(timing.name),
-				math.round((action:when() or 0) * 1000), actionLeadMs)
+				actionWhenMs, scheduledWhenMs, actionLeadMs)
 		else
 			Defender.dbg("HANDLE executing type='%s' timing='%s' when=%dms",
 				actionType, PP_SCRAMBLE_STR(timing.name),
-				math.round((action:when() or 0) * 1000))
+				actionWhenMs)
 		end
 	end
 

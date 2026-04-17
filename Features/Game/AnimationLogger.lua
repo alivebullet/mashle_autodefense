@@ -45,10 +45,20 @@ return LPH_NO_VIRTUALIZE(function()
 	-- Key: animation ID, Value: { id, entityName, length, speed, keyframes = { { name, timePosition } }, capturedAt }
 	local capturedAnimations = {}
 
+	-- Most recent source entity seen for each animation id, used by the visualizer.
+	local previewSources = {}
+
 	-- Animations currently playing on nearby entities (for damage-hit capture).
 	-- Key: animation ID, Value: { track = AnimationTrack, entity = Model }
 	-- Note: only the most recent track per aid is stored.
 	local activePlayingTracks = {}
+
+	---Return whether a model has a usable part for distance or viewport preview.
+	---@param model Model?
+	---@return boolean
+	local function hasRenderablePart(model)
+		return model ~= nil and (model.PrimaryPart ~= nil or model:FindFirstChildWhichIsA("BasePart", true) ~= nil)
+	end
 
 	---Get distance from local player to an entity.
 	---@param entity Model
@@ -103,13 +113,24 @@ return LPH_NO_VIRTUALIZE(function()
 	---@return Model?
 	local function getEntityFromAnimator(animator)
 		local current = animator.Parent
+		local fallback = nil
 		while current do
-			if current:IsA("Model") and current:FindFirstChildWhichIsA("Humanoid") then
-				return current
+			if current:IsA("Model") then
+				if hasRenderablePart(current) then
+					fallback = current
+				end
+
+				if current:FindFirstChildWhichIsA("Humanoid") and hasRenderablePart(current) then
+					return current
+				end
+
+				if current:FindFirstChildWhichIsA("AnimationController") and hasRenderablePart(current) then
+					return current
+				end
 			end
 			current = current.Parent
 		end
-		return nil
+		return fallback
 	end
 
 	---Track an animator and log its animations.
@@ -140,6 +161,8 @@ return LPH_NO_VIRTUALIZE(function()
 			if TimingHarvester.isBanned(aid) then
 				return
 			end
+
+			previewSources[aid] = entity
 
 			-- Feed the timing harvester unconditionally (self-gated by EnableTimingHarvester + its own distance filter).
 			TimingHarvester.onAnimationStart(aid, entity, track)
@@ -291,6 +314,23 @@ return LPH_NO_VIRTUALIZE(function()
 	---@return table
 	function AnimationLogger.getAllCaptured()
 		return capturedAnimations
+	end
+
+	---Get the latest known source entity for an animation id.
+	---@param aid string
+	---@return Model?
+	function AnimationLogger.getPreviewSource(aid)
+		local source = previewSources[aid]
+		if typeof(source) ~= "Instance" or not source:IsA("Model") then
+			return nil
+		end
+
+		if not source.Parent then
+			previewSources[aid] = nil
+			return nil
+		end
+
+		return source
 	end
 
 	---Clear all captured animations.
@@ -546,6 +586,7 @@ return LPH_NO_VIRTUALIZE(function()
 		end
 
 		trackedAnimators = {}
+		previewSources = {}
 		loggerMaid:clean()
 		isInitialized = false
 	end
