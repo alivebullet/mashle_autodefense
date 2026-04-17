@@ -58,6 +58,8 @@ local AttributeListener = require("Features/Combat/AttributeListener")
 ---@field rpbdata table<string, PlaybackData> Recorded playback data. Optimization so we don't have to constantly reiterate over recorded data.
 ---@field manimations table<number, Animation>
 ---@field track AnimationTrack? Don't be confused. This is the **valid && last** animation track played.
+---@field trackStartCFrame CFrame?
+---@field trackStartDistance number?
 ---@field maid Maid This maid is cleaned up after every new animation track. Safe to use for on-animation-track setup.
 local AnimatorDefender = setmetatable({}, { __index = Defender })
 AnimatorDefender.__index = AnimatorDefender
@@ -271,6 +273,22 @@ AnimatorDefender.valid = LPH_NO_VIRTUALIZE(function(self, timing, action)
 			Defender.dbg("HITBOX PASS for '%s'", PP_SCRAMBLE_STR(timing.name))
 		end
 		return true
+	end
+
+	-- Fast movers can leave their current root far from the original attack pose by the
+	-- time the scheduled action runs. Retry once against the animation-start snapshot.
+	if self.trackStartCFrame then
+		local snapshotOptions = options:clone()
+		snapshotOptions.spredict = false
+		snapshotOptions.cframe = self.trackStartCFrame
+
+		if self:hc(snapshotOptions, nil) then
+			if dbg then
+				Defender.dbg("SNAPSHOT PASS for '%s' startDist=%.1f currentDist=%.1f",
+					PP_SCRAMBLE_STR(timing.name), self.trackStartDistance or -1, self:distance(self.entity) or -1)
+			end
+			return true
+		end
 	end
 
 	local pc = self:fpc(timing, options)
@@ -521,6 +539,8 @@ AnimatorDefender.process = LPH_NO_VIRTUALIZE(function(self, track)
 	self.timing = timing
 	self.track = track
 	self.offset = self.rdelay()
+	self.trackStartCFrame = humanoidRootPart.CFrame
+	self.trackStartDistance = distance
 
 	-- Fake mistime rate.
 	---@type Action?
@@ -589,6 +609,8 @@ function AnimatorDefender:clean()
 	-- Empty data.
 	self.keyframes = {}
 	self.heffects = {}
+	self.trackStartCFrame = nil
+	self.trackStartDistance = nil
 
 	-- Empty Keyframe maid.
 	self.kfmaid:clean()
@@ -616,6 +638,8 @@ function AnimatorDefender.new(animator)
 	self.track = nil
 	self.timing = nil
 	self.rdelay = nil
+	self.trackStartCFrame = nil
+	self.trackStartDistance = nil
 
 	self.heffects = {}
 	self.keyframes = {}
