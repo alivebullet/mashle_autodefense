@@ -8950,6 +8950,9 @@ local Signal = require("Utility/Signal")
 ---@module Features.Combat.TimingHarvester
 local TimingHarvester = require("Features/Combat/TimingHarvester")
 
+---@module Utility.Configuration
+local Configuration = require("Utility/Configuration")
+
 -- Services.
 local players = game:GetService("Players")
 
@@ -8959,8 +8962,19 @@ local attributeMaid = Maid.new()
 -- Per-character maid; cleaned on CharacterRemoving. Holds watchers on CharacterState BoolValues.
 local stateMaid = Maid.new()
 
-local PARRY_COOLDOWN_S = 2000 / 1000
+local DEFAULT_SYNTHETIC_PARRY_COOLDOWN_MS = 500
 local DASH_COOLDOWN_S = 1750 / 1000
+
+---@return number
+local function parryCooldownSeconds()
+	local cooldownMs = Configuration.expectOptionValue("SyntheticParryCooldownMs")
+
+	if type(cooldownMs) ~= "number" or cooldownMs < 0 then
+		cooldownMs = DEFAULT_SYNTHETIC_PARRY_COOLDOWN_MS
+	end
+
+	return cooldownMs / 1000
+end
 
 -- BoolValues under character.CharacterState that we care about. When the .Value flips true,
 -- the paired callback fires. Mashle splits state across many BoolValues instead of using
@@ -9012,11 +9026,12 @@ end
 ---Start the local parry cooldown from a parry attempt.
 function AttributeListener.markParryAttempt()
 	local now = tick()
+	local parryCooldownS = parryCooldownSeconds()
 	AttributeListener.lastParryAttempt = now
 
 	-- Do not extend the synthetic cooldown when we are already locked out. That makes
 	-- repeated checks drift farther away from the real game cooldown.
-	if not AttributeListener.lastParry or now - AttributeListener.lastParry >= PARRY_COOLDOWN_S then
+	if not AttributeListener.lastParry or now - AttributeListener.lastParry >= parryCooldownS then
 		AttributeListener.lastParry = now
 	end
 end
@@ -9113,7 +9128,9 @@ function AttributeListener.parryRemainingMs()
 		return 0
 	end
 
-	return math.max(0, math.round((PARRY_COOLDOWN_S - (tick() - AttributeListener.lastParry)) * 1000))
+	local parryCooldownS = parryCooldownSeconds()
+
+	return math.max(0, math.round((parryCooldownS - (tick() - AttributeListener.lastParry)) * 1000))
 end
 
 ---Active CharacterState BoolValues on the local character.
@@ -22629,6 +22646,16 @@ function CombatTab.initAutoDefenseSection(groupbox)
 		Min = 0,
 		Max = 150,
 		Default = 45,
+		Suffix = "ms",
+		Rounding = 0,
+	})
+
+	autoDefenseDepBox:AddSlider("SyntheticParryCooldownMs", {
+		Text = "Synthetic Parry Cooldown",
+		Tooltip = "Local fallback parry lockout after a parry attempt when the game does not confirm success. Lower this if chained parries are being blocked too long.",
+		Min = 0,
+		Max = 2000,
+		Default = 500,
 		Suffix = "ms",
 		Rounding = 0,
 	})
