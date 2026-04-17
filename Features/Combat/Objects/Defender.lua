@@ -220,6 +220,10 @@ Defender.valid = LPH_NO_VIRTUALIZE(function(self, timing, action)
 		return self:notify(timing, "No character found.")
 	end
 
+	if AttributeListener.cs("Ragdoll") or AttributeListener.cs("Stun") then
+		return self:notify(timing, "User is stunned or ragdolled.")
+	end
+
 	if selectedFilters["Disable When Knocked Recently"] and AttributeListener.krecently() then
 		return self:notify(timing, "User was knocked recently.")
 	end

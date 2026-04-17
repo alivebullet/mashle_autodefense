@@ -12096,6 +12096,10 @@ Defender.valid = LPH_NO_VIRTUALIZE(function(self, timing, action)
 		return self:notify(timing, "No character found.")
 	end
 
+	if AttributeListener.cs("Ragdoll") or AttributeListener.cs("Stun") then
+		return self:notify(timing, "User is stunned or ragdolled.")
+	end
+
 	if selectedFilters["Disable When Knocked Recently"] and AttributeListener.krecently() then
 		return self:notify(timing, "User was knocked recently.")
 	end
@@ -13015,6 +13019,26 @@ local function sendMovementKeyEvent(keyCode, isDown)
 	return ok
 end
 
+---@param key string?
+---@return Vector3
+local function dashMoveVector(key)
+	local localVectorMap = {
+		W = Vector3.new(0, 0, -1),
+		A = Vector3.new(-1, 0, 0),
+		S = Vector3.new(0, 0, 1),
+		D = Vector3.new(1, 0, 0),
+	}
+
+	local localVector = localVectorMap[key] or localVectorMap.S
+	local camera = workspace.CurrentCamera
+	if not camera then
+		return localVector
+	end
+
+	local worldVector = camera.CFrame:VectorToWorldSpace(localVector)
+	return Vector3.new(worldVector.X, 0, worldVector.Z)
+end
+
 ---Dash (Mashle). Fires RequestModule with direction string and cooldown payload.
 ---Note: Mashle appears to infer actual movement from held keys server-side, so a bare
 ---remote fire may not produce movement. If dash fallback silently no-ops, either turn
@@ -13064,9 +13088,17 @@ function InputClient.dash()
 
 	local direction = directionMap[key] or "GroundBack"
 	local simulatedKey = false
+	local localPlayer = players.LocalPlayer
+	local character = localPlayer and localPlayer.Character
+	local humanoid = character and character:FindFirstChildWhichIsA("Humanoid")
+	local moveVector = dashMoveVector(key)
 
 	if keyCode and not userInputService:IsKeyDown(keyCode) then
 		simulatedKey = sendMovementKeyEvent(keyCode, true)
+	end
+
+	if humanoid and moveVector.Magnitude > 0 then
+		humanoid:Move(moveVector, false)
 	end
 
 	ParryCooldownProbe.onDashAttempt("script")
@@ -13075,6 +13107,12 @@ function InputClient.dash()
 	if simulatedKey then
 		task.delay(DASH_INPUT_HOLD_S, function()
 			sendMovementKeyEvent(keyCode, false)
+		end)
+	end
+
+	if humanoid then
+		task.delay(DASH_INPUT_HOLD_S, function()
+			humanoid:Move(Vector3.zero, false)
 		end)
 	end
 end
