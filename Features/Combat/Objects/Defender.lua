@@ -62,6 +62,10 @@ local debrisService = game:GetService("Debris")
 local MAX_VISUALIZATION_TIME = 5.0
 local MAX_REPEAT_WAIT = 10.0
 local PREDICTION_LENIENCY_MULTI = 5.0
+local NOTIFY_DEDUP_WINDOW = 1.0
+
+-- Notification de-duplication.
+local lastNotifyTimes = {}
 
 ---Log a miss to the UI library with distance check.
 ---@param type string
@@ -380,7 +384,18 @@ Defender.notify = LPH_NO_VIRTUALIZE(function(self, timing, str, ...)
 		return
 	end
 
-	Logger.notify("[%s] (%s) %s", PP_SCRAMBLE_STR(timing.name), self.__type, string.format(str, ...))
+	local rendered = string.format(str, ...)
+	local key = string.format("%s|%s|%s", self.__type, PP_SCRAMBLE_STR(timing.name), rendered)
+	local now = os.clock()
+	local previous = lastNotifyTimes[key]
+
+	if previous and (now - previous) < NOTIFY_DEDUP_WINDOW then
+		return
+	end
+
+	lastNotifyTimes[key] = now
+
+	Logger.notify("[%s] (%s) %s", PP_SCRAMBLE_STR(timing.name), self.__type, rendered)
 end)
 
 ---@note: Perhaps one day, we can get better approximations for these.

@@ -233,10 +233,12 @@ AnimatorDefender.valid = LPH_NO_VIRTUALIZE(function(self, timing, action)
 	if not target then
 		if dbg then
 			local ents = workspace:FindFirstChild("Entities")
+			local live = workspace:FindFirstChild("Live")
 			local parentPath = self.entity.Parent and self.entity.Parent:GetFullName() or "nil"
-			Defender.dbg("TARGET nil entity='%s' parent='%s' entitiesFolder=%s ignoreMobs=%s",
+			Defender.dbg("TARGET nil entity='%s' parent='%s' entitiesFolder=%s liveFolder=%s ignoreMobs=%s",
 				self.entity.Name, parentPath,
 				tostring(ents ~= nil),
+				tostring(live ~= nil),
 				tostring(Configuration.expectToggleValue("IgnoreMobs")))
 		end
 		return self:notify(timing, "Not a viable target.")

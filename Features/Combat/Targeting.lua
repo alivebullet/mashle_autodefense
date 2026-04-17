@@ -18,11 +18,29 @@ local Table = require("Utility/Table")
 local players = game:GetService("Players")
 local userInputService = game:GetService("UserInputService")
 
+---Get entity containers for the current game.
+---@return Instance[]
+local function getEntityContainers()
+	local containers = {}
+	local entities = workspace:FindFirstChild("Entities")
+	local live = workspace:FindFirstChild("Live")
+
+	if entities then
+		table.insert(containers, entities)
+	end
+
+	if live and live ~= entities then
+		table.insert(containers, live)
+	end
+
+	return containers
+end
+
 ---Get a list of all viable targets.
 ---@return Target[]
 Targeting.viable = LPH_NO_VIRTUALIZE(function()
-	local ents = workspace:FindFirstChild("Entities")
-	if not ents then
+	local entityContainers = getEntityContainers()
+	if #entityContainers == 0 then
 		return {}
 	end
 
@@ -42,74 +60,86 @@ Targeting.viable = LPH_NO_VIRTUALIZE(function()
 	end
 
 	local targets = {}
+	local seenEntities = {}
 
-	for _, entity in next, ents:GetChildren() do
-		if entity == localCharacter then
-			continue
+	for _, container in ipairs(entityContainers) do
+		for _, entity in next, container:GetChildren() do
+			if not entity:IsA("Model") then
+				continue
+			end
+
+			if seenEntities[entity] then
+				continue
+			end
+			seenEntities[entity] = true
+
+			if entity == localCharacter then
+				continue
+			end
+
+			local playerFromCharacter = players:GetPlayerFromCharacter(entity)
+			if not playerFromCharacter and Configuration.expectToggleValue("IgnoreMobs") then
+				continue
+			end
+
+			if playerFromCharacter and Configuration.expectToggleValue("IgnorePlayers") then
+				continue
+			end
+
+			local humanoid = entity:FindFirstChildWhichIsA("Humanoid")
+			if not humanoid then
+				continue
+			end
+
+			local rootPart = entity:FindFirstChild("HumanoidRootPart")
+			if not rootPart then
+				continue
+			end
+
+			if humanoid.Health <= 0 then
+				continue
+			end
+
+			local usernameList = Options["UsernameList"]
+
+			local displayNameFound = playerFromCharacter
+				and table.find(usernameList.Values, playerFromCharacter.DisplayName)
+
+			local usernameFound = playerFromCharacter and table.find(usernameList.Values, playerFromCharacter.Name)
+
+			if displayNameFound or usernameFound then
+				continue
+			end
+
+			local fieldOfViewToEntity =
+				currentCamera.CFrame.LookVector:Dot((localRootPart.Position - rootPart.Position).Unit)
+
+			local fieldOfViewLimit = Configuration.expectOptionValue("FOVLimit")
+
+			if fieldOfViewLimit <= 0 or (fieldOfViewToEntity * -1) <= math.cos(math.rad(fieldOfViewLimit)) then
+				continue
+			end
+
+			local currentDistance = (rootPart.Position - localRootPart.Position).Magnitude
+			if currentDistance > Configuration.expectOptionValue("DistanceLimit") then
+				continue
+			end
+
+			if
+				playerFromCharacter
+				and PlayerScanning.isAlly(playerFromCharacter)
+				and Configuration.expectToggleValue("IgnoreAllies")
+			then
+				continue
+			end
+
+			local mousePosition = userInputService:GetMouseLocation()
+			local unitRay = workspace.CurrentCamera:ScreenPointToRay(mousePosition.X, mousePosition.Y)
+			local distanceToCrosshair = unitRay:Distance(rootPart.Position)
+
+			targets[#targets + 1] =
+				Target.new(entity, humanoid, rootPart, distanceToCrosshair, fieldOfViewToEntity, currentDistance)
 		end
-
-		local playerFromCharacter = players:GetPlayerFromCharacter(entity)
-		if not playerFromCharacter and Configuration.expectToggleValue("IgnoreMobs") then
-			continue
-		end
-
-		if playerFromCharacter and Configuration.expectToggleValue("IgnorePlayers") then
-			continue
-		end
-
-		local humanoid = entity:FindFirstChildWhichIsA("Humanoid")
-		if not humanoid then
-			continue
-		end
-
-		local rootPart = entity:FindFirstChild("HumanoidRootPart")
-		if not rootPart then
-			continue
-		end
-
-		if humanoid.Health <= 0 then
-			continue
-		end
-
-		local usernameList = Options["UsernameList"]
-
-		local displayNameFound = playerFromCharacter
-			and table.find(usernameList.Values, playerFromCharacter.DisplayName)
-
-		local usernameFound = playerFromCharacter and table.find(usernameList.Values, playerFromCharacter.Name)
-
-		if displayNameFound or usernameFound then
-			continue
-		end
-
-		local fieldOfViewToEntity =
-			currentCamera.CFrame.LookVector:Dot((localRootPart.Position - rootPart.Position).Unit)
-
-		local fieldOfViewLimit = Configuration.expectOptionValue("FOVLimit")
-
-		if fieldOfViewLimit <= 0 or (fieldOfViewToEntity * -1) <= math.cos(math.rad(fieldOfViewLimit)) then
-			continue
-		end
-
-		local currentDistance = (rootPart.Position - localRootPart.Position).Magnitude
-		if currentDistance > Configuration.expectOptionValue("DistanceLimit") then
-			continue
-		end
-
-		if
-			playerFromCharacter
-			and PlayerScanning.isAlly(playerFromCharacter)
-			and Configuration.expectToggleValue("IgnoreAllies")
-		then
-			continue
-		end
-
-		local mousePosition = userInputService:GetMouseLocation()
-		local unitRay = workspace.CurrentCamera:ScreenPointToRay(mousePosition.X, mousePosition.Y)
-		local distanceToCrosshair = unitRay:Distance(rootPart.Position)
-
-		targets[#targets + 1] =
-			Target.new(entity, humanoid, rootPart, distanceToCrosshair, fieldOfViewToEntity, currentDistance)
 	end
 
 	return targets
