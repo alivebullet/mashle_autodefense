@@ -660,7 +660,17 @@ Defender.handle = LPH_NO_VIRTUALIZE(function(self, timing, action, notify)
 	end
 
 	if dbg then
-		Defender.dbg("PARRY BLOCKED cparry()=false (cooldown) for '%s'", PP_SCRAMBLE_STR(timing.name))
+		local parryStatus = AttributeListener.parryStatus()
+		local states = #parryStatus.activeStates > 0 and table.concat(parryStatus.activeStates, ",") or "-"
+		Defender.dbg(
+			"PARRY BLOCKED cparry()=false reason=%s remaining=%dms sinceAttempt=%s sinceSuccess=%s states=%s for '%s'",
+			parryStatus.reason,
+			parryStatus.remainingMs or 0,
+			parryStatus.sinceAttemptMs and tostring(parryStatus.sinceAttemptMs) or "-",
+			parryStatus.sinceSuccessMs and tostring(parryStatus.sinceSuccessMs) or "-",
+			states,
+			PP_SCRAMBLE_STR(timing.name)
+		)
 	end
 
 	---Block fallback function. Returns whether the fallback was successful.

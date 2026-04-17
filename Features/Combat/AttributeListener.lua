@@ -1,5 +1,12 @@
 -- AttributeListener module.
-local AttributeListener = { lastParry = nil, lastDash = nil, lastKnock = nil }
+local AttributeListener = {
+	lastParry = nil,
+	lastParryAttempt = nil,
+	lastParrySuccess = nil,
+	lastDash = nil,
+	lastKnock = nil,
+	stateValues = {},
+}
 
 ---@modules Utility.Maid
 local Maid = require("Utility/Maid")
@@ -28,10 +35,12 @@ local DASH_COOLDOWN_S = 1750 / 1000
 local WATCHED = {
 	Parry = function()
 		AttributeListener.lastParry = nil
+		AttributeListener.lastParrySuccess = tick()
 		TimingHarvester.onParryResult(false)
 	end,
 	PerfectParry = function()
 		AttributeListener.lastParry = nil
+		AttributeListener.lastParrySuccess = tick()
 		TimingHarvester.onParryResult(true)
 	end,
 	DashDodge = function()
@@ -69,12 +78,20 @@ end
 
 ---Start the local parry cooldown from a parry attempt.
 function AttributeListener.markParryAttempt()
-	AttributeListener.lastParry = tick()
+	local now = tick()
+	AttributeListener.lastParryAttempt = now
+
+	-- Do not extend the synthetic cooldown when we are already locked out. That makes
+	-- repeated checks drift farther away from the real game cooldown.
+	if not AttributeListener.lastParry or now - AttributeListener.lastParry >= PARRY_COOLDOWN_S then
+		AttributeListener.lastParry = now
+	end
 end
 
 ---Clear the local parry cooldown when the game confirms a successful parry.
 function AttributeListener.clearParryCooldown()
 	AttributeListener.lastParry = nil
+	AttributeListener.lastParrySuccess = tick()
 end
 
 ---Read a CharacterState BoolValue on the local character.
@@ -89,8 +106,12 @@ end
 ---@param bv BoolValue
 ---@param onTrue function
 local function watchBool(bv, onTrue)
+	AttributeListener.stateValues[bv.Name] = bv.Value
+
 	local signal = Signal.new(bv:GetPropertyChangedSignal("Value"))
 	stateMaid:add(signal:connect("AttributeListener_CSValue_" .. bv.Name, function()
+		AttributeListener.stateValues[bv.Name] = bv.Value
+
 		if bv.Value then
 			onTrue()
 		end
@@ -101,18 +122,16 @@ end
 ---late-added ones via ChildAdded.
 ---@param characterState Instance
 local function attachStateWatches(characterState)
-	for name, onTrue in pairs(WATCHED) do
-		local bv = characterState:FindFirstChild(name)
-		if bv and bv:IsA("BoolValue") then
-			watchBool(bv, onTrue)
+	for _, child in ipairs(characterState:GetChildren()) do
+		if child:IsA("BoolValue") then
+			watchBool(child, WATCHED[child.Name] or function() end)
 		end
 	end
 
 	local childAdded = Signal.new(characterState.ChildAdded)
 	stateMaid:add(childAdded:connect("AttributeListener_OnCSChildAdded", function(child)
-		local onTrue = WATCHED[child.Name]
-		if onTrue and child:IsA("BoolValue") then
-			watchBool(child, onTrue)
+		if child:IsA("BoolValue") then
+			watchBool(child, WATCHED[child.Name] or function() end)
 		end
 	end))
 end
@@ -135,8 +154,11 @@ end
 local function onCharacterRemoving(character)
 	stateMaid:clean()
 	AttributeListener.lastParry = nil
+	AttributeListener.lastParryAttempt = nil
+	AttributeListener.lastParrySuccess = nil
 	AttributeListener.lastDash = nil
 	AttributeListener.lastKnock = nil
+	AttributeListener.stateValues = {}
 end
 
 ---Knocked recently?
@@ -151,6 +173,51 @@ function AttributeListener.krecently()
 	return AttributeListener.lastKnock and tick() - AttributeListener.lastKnock <= 0.250
 end
 
+---Milliseconds remaining on the synthetic parry cooldown.
+---@return number
+function AttributeListener.parryRemainingMs()
+	if not AttributeListener.lastParry then
+		return 0
+	end
+
+	return math.max(0, math.round((PARRY_COOLDOWN_S - (tick() - AttributeListener.lastParry)) * 1000))
+end
+
+---Active CharacterState BoolValues on the local character.
+---@return string[]
+function AttributeListener.activeStates()
+	local active = {}
+
+	for name, value in pairs(AttributeListener.stateValues) do
+		if value then
+			table.insert(active, name)
+		end
+	end
+
+	table.sort(active)
+	return active
+end
+
+---Current local parry availability snapshot.
+---@return table
+function AttributeListener.parryStatus()
+	local now = tick()
+	local remainingMs = AttributeListener.parryRemainingMs()
+	local activeStates = AttributeListener.activeStates()
+	local reason = remainingMs > 0 and "synthetic-cooldown" or "ready"
+
+	return {
+		canParry = remainingMs <= 0,
+		reason = reason,
+		remainingMs = remainingMs,
+		sinceAttemptMs = AttributeListener.lastParryAttempt and math.round((now - AttributeListener.lastParryAttempt) * 1000)
+			or nil,
+		sinceSuccessMs = AttributeListener.lastParrySuccess and math.round((now - AttributeListener.lastParrySuccess) * 1000)
+			or nil,
+		activeStates = activeStates,
+	}
+end
+
 ---Can we parry?
 ---@return boolean
 function AttributeListener.cparry()
@@ -160,7 +227,7 @@ function AttributeListener.cparry()
 		return false
 	end
 
-	return not AttributeListener.lastParry or tick() - AttributeListener.lastParry >= PARRY_COOLDOWN_S
+	return AttributeListener.parryStatus().canParry
 end
 
 ---Can we dash?
