@@ -12,6 +12,9 @@ local Configuration = require("Utility/Configuration")
 ---@module Features.Combat.TimingHarvester
 local TimingHarvester = require("Features/Combat/TimingHarvester")
 
+---@module Features.Combat.AttributeListener
+local AttributeListener = require("Features/Combat/AttributeListener")
+
 ---Deflect. This is called this way because it can either give parry or block frames depending on whether or not parry is on cooldown.
 function InputClient.deflect()
 	InputClient.block(true)
@@ -83,6 +86,7 @@ function InputClient.parry()
 		return
 	end
 
+	AttributeListener.markParryAttempt()
 	TimingHarvester.onParryPress()
 	requestModule:FireServer("Misc", "Parry")
 end

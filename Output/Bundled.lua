@@ -8952,16 +8952,19 @@ local attributeMaid = Maid.new()
 -- Per-character maid; cleaned on CharacterRemoving. Holds watchers on CharacterState BoolValues.
 local stateMaid = Maid.new()
 
+local PARRY_COOLDOWN_S = 2000 / 1000
+local DASH_COOLDOWN_S = 1750 / 1000
+
 -- BoolValues under character.CharacterState that we care about. When the .Value flips true,
 -- the paired callback fires. Mashle splits state across many BoolValues instead of using
 -- Type Soul's single CurrentState string attribute.
 local WATCHED = {
 	Parry = function()
-		AttributeListener.lastParry = tick()
+		AttributeListener.lastParry = nil
 		TimingHarvester.onParryResult(false)
 	end,
 	PerfectParry = function()
-		AttributeListener.lastParry = tick()
+		AttributeListener.lastParry = nil
 		TimingHarvester.onParryResult(true)
 	end,
 	DashDodge = function()
@@ -8995,6 +8998,11 @@ function AttributeListener.csOn(character, name)
 	end
 
 	return bv.Value
+end
+
+---Start the local parry cooldown from a parry attempt.
+function AttributeListener.markParryAttempt()
+	AttributeListener.lastParry = tick()
 end
 
 ---Read a CharacterState BoolValue on the local character.
@@ -9080,7 +9088,7 @@ function AttributeListener.cparry()
 		return false
 	end
 
-	return not AttributeListener.lastParry or tick() - AttributeListener.lastParry >= (2000 / 1000)
+	return not AttributeListener.lastParry or tick() - AttributeListener.lastParry >= PARRY_COOLDOWN_S
 end
 
 ---Can we dash?
@@ -9092,7 +9100,7 @@ function AttributeListener.cdash()
 		return false
 	end
 
-	return not AttributeListener.lastDash or tick() - AttributeListener.lastDash >= (1750 / 1000)
+	return not AttributeListener.lastDash or tick() - AttributeListener.lastDash >= DASH_COOLDOWN_S
 end
 
 ---Initialize AttributeListener module.
@@ -12056,6 +12064,9 @@ local Configuration = require("Utility/Configuration")
 ---@module Features.Combat.TimingHarvester
 local TimingHarvester = require("Features/Combat/TimingHarvester")
 
+---@module Features.Combat.AttributeListener
+local AttributeListener = require("Features/Combat/AttributeListener")
+
 ---Deflect. This is called this way because it can either give parry or block frames depending on whether or not parry is on cooldown.
 function InputClient.deflect()
 	InputClient.block(true)
@@ -12127,6 +12138,7 @@ function InputClient.parry()
 		return
 	end
 
+	AttributeListener.markParryAttempt()
 	TimingHarvester.onParryPress()
 	requestModule:FireServer("Misc", "Parry")
 end
