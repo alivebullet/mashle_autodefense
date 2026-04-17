@@ -8787,14 +8787,14 @@ return LPH_NO_VIRTUALIZE(function()
 			local inLogRange = isInRange(distance)
 			local inCaptureRange = isInCaptureRange(distance)
 
+			local aid = track.Animation and track.Animation.AnimationId or "Unknown"
+
+			-- Feed the timing harvester unconditionally (self-gated by EnableTimingHarvester + its own distance filter).
+			TimingHarvester.onAnimationStart(aid, entity, track)
+
 			if not inLogRange and not inCaptureRange then
 				return
 			end
-
-			local aid = track.Animation and track.Animation.AnimationId or "Unknown"
-
-			-- Feed the timing harvester (self-gated by EnableTimingHarvester).
-			TimingHarvester.onAnimationStart(aid, entity, track)
 
 			-- Log the animation play event.
 			if inLogRange then
