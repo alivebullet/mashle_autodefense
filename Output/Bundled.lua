@@ -9051,12 +9051,70 @@ return LPH_NO_VIRTUALIZE(function()
 	-- Sample DB: [aid] = { meta = { aid, entityName, firstSeenAt }, pressSamples = {...}, hitSamples = {...} }
 	local samples = {}
 
+	-- Observed combat animations, even if they never produced usable samples.
+	-- Key: animation ID, Value: { meta = { aid, entityName, priority, firstSeenAt, lastSeenAt }, seenCount = number }
+	local observedAnims = {}
+
+	-- User-banned animation IDs that should be ignored by logger + harvester.
+	-- Key: animation ID, Value: { meta = {...}, sampleCount = number, seenCount = number }
+	local bannedAnims = {}
+
 	-- Tuning constants.
 	local MAX_RECENT_ANIMS = 24
 	local ANIM_LOOKBACK_S = 2.0
 	local MAX_PRESS_OFFSET_S = 1.5
 	local OUTCOME_WAIT_S = 0.5
 	local ATTRIB_MAX_DISTANCE = 60
+
+	---Count samples for a given animation id.
+	---@param aid string
+	---@return number
+	local function sampleCountFor(aid)
+		local b = samples[aid]
+		if not b then
+			return 0
+		end
+
+		return #b.pressSamples + #b.hitSamples
+	end
+
+	---Track that an animation id was observed in combat.
+	---@param aid string
+	---@param entityName string
+	---@param priority string?
+	local function markObserved(aid, entityName, priority)
+		local info = observedAnims[aid]
+		if not info then
+			info = {
+				meta = {
+					aid = aid,
+					entityName = entityName,
+					priority = priority or "?",
+					firstSeenAt = tick(),
+					lastSeenAt = tick(),
+				},
+				seenCount = 0,
+			}
+			observedAnims[aid] = info
+		end
+
+		info.meta.entityName = entityName or info.meta.entityName or "?"
+		info.meta.priority = priority or info.meta.priority or "?"
+		info.meta.lastSeenAt = tick()
+		info.seenCount = (info.seenCount or 0) + 1
+	end
+
+	---Remove all recent buffered animation starts for an animation id.
+	---@param aid string
+	local function pruneRecent(aid)
+		local filtered = {}
+		for _, entry in ipairs(recentAnims) do
+			if entry.aid ~= aid then
+				table.insert(filtered, entry)
+			end
+		end
+		recentAnims = filtered
+	end
 
 	---Get full RTT in seconds from Stats.Network.ServerStatsItem."Data Ping" (ms).
 	---@return number
@@ -9115,6 +9173,10 @@ return LPH_NO_VIRTUALIZE(function()
 
 		for i = #recentAnims, 1, -1 do
 			local a = recentAnims[i]
+			if bannedAnims[a.aid] then
+				continue
+			end
+
 			if a.t0 < cutoff then
 				break
 			end
@@ -9176,6 +9238,10 @@ return LPH_NO_VIRTUALIZE(function()
 			return
 		end
 
+		if bannedAnims[aid] then
+			return
+		end
+
 		-- Skip non-combat animations (Idle, Movement, Core).
 		if track and track.Priority then
 			local pri = track.Priority
@@ -9185,6 +9251,8 @@ return LPH_NO_VIRTUALIZE(function()
 				return
 			end
 		end
+
+		markObserved(aid, entity and entity.Name or "?", (track and track.Priority) and track.Priority.Name or "?")
 
 		table.insert(recentAnims, {
 			aid = aid,
@@ -9198,6 +9266,105 @@ return LPH_NO_VIRTUALIZE(function()
 		})
 
 		if #recentAnims > MAX_RECENT_ANIMS then
+
+	---Return whether an animation id is banned.
+	---@param aid string
+	---@return boolean
+	function TimingHarvester.isBanned(aid)
+		return bannedAnims[aid] ~= nil
+	end
+
+	---Get observed combat animations.
+	---@return table
+	function TimingHarvester.getObserved()
+		return observedAnims
+	end
+
+	---Get banned animations.
+	---@return table
+	function TimingHarvester.getBanned()
+		return bannedAnims
+	end
+
+	---Ban an animation id and remove any current harvested data for it.
+	---@param aid string
+	---@return boolean, string
+	function TimingHarvester.ban(aid)
+		if not aid or aid == "" then
+			return false, "Invalid animation id."
+		end
+
+		if bannedAnims[aid] then
+			return false, string.format("Animation already banned: %s", aid)
+		end
+
+		local observed = observedAnims[aid]
+		local sample = samples[aid]
+		local entityName = (sample and sample.meta.entityName)
+			or (observed and observed.meta.entityName)
+			or "?"
+		local priority = (sample and sample.meta.priority)
+			or (observed and observed.meta.priority)
+			or "?"
+
+		bannedAnims[aid] = {
+			meta = {
+				aid = aid,
+				entityName = entityName,
+				priority = priority,
+				bannedAt = tick(),
+			},
+			sampleCount = sampleCountFor(aid),
+			seenCount = observed and observed.seenCount or 0,
+		}
+
+		samples[aid] = nil
+		observedAnims[aid] = nil
+		pruneRecent(aid)
+
+		Logger.notify("[Harvester] Banned '%s' (%s).", entityName, aid)
+		return true, aid
+	end
+
+	---Unban an animation id. It will be observed again next time it plays.
+	---@param aid string
+	---@return boolean, string
+	function TimingHarvester.unban(aid)
+		local banned = bannedAnims[aid]
+		if not banned then
+			return false, string.format("Animation is not banned: %s", tostring(aid))
+		end
+
+		bannedAnims[aid] = nil
+		Logger.notify("[Harvester] Unbanned '%s' (%s).", banned.meta.entityName or "?", aid)
+		return true, aid
+	end
+
+	---Clear all banned animation ids.
+	function TimingHarvester.clearBanned()
+		bannedAnims = {}
+		Logger.notify("[Harvester] Cleared banned animation list.")
+	end
+
+	---Dump banned animations to the logger.
+	function TimingHarvester.dumpBanned()
+		local count = 0
+		for aid, info in next, bannedAnims do
+			count = count + 1
+			Logger.warn(
+				"[Harvester][Banned] %s %s: seen=%d samples=%d priority=%s",
+				info.meta.entityName or "?",
+				aid,
+				info.seenCount or 0,
+				info.sampleCount or 0,
+				info.meta.priority or "?"
+			)
+		end
+
+		if count == 0 then
+			Logger.warn("[Harvester][Banned] no banned animations.")
+		end
+	end
 			table.remove(recentAnims, 1)
 		end
 	end
@@ -9650,7 +9817,7 @@ return LPH_NO_VIRTUALIZE(function()
 		samples = {}
 		recentAnims = {}
 		pendingPress = nil
-		Logger.notify("[Harvester] Cleared all samples.")
+		Logger.notify("[Harvester] Cleared all harvested samples.")
 	end
 
 	---Return live totals for UI display.
@@ -9692,6 +9859,8 @@ return LPH_NO_VIRTUALIZE(function()
 		harvesterMaid:clean()
 		damageMaid:clean()
 		samples = {}
+		observedAnims = {}
+		bannedAnims = {}
 		recentAnims = {}
 		pendingPress = nil
 		isInit = false
@@ -13228,6 +13397,10 @@ return LPH_NO_VIRTUALIZE(function()
 
 			local aid = track.Animation and track.Animation.AnimationId or "Unknown"
 
+			if TimingHarvester.isBanned(aid) then
+				return
+			end
+
 			-- Feed the timing harvester unconditionally (self-gated by EnableTimingHarvester + its own distance filter).
 			TimingHarvester.onAnimationStart(aid, entity, track)
 
@@ -13383,6 +13556,12 @@ return LPH_NO_VIRTUALIZE(function()
 	---Clear all captured animations.
 	function AnimationLogger.clearCaptured()
 		capturedAnimations = {}
+	end
+
+	---Remove a captured animation by animation id.
+	---@param aid string
+	function AnimationLogger.removeCaptured(aid)
+		capturedAnimations[aid] = nil
 	end
 
 	---Generate an AnimationTiming from a captured animation and push it into the config.
@@ -19403,6 +19582,9 @@ return LPH_NO_VIRTUALIZE(function()
 	---@module Features.Game.AnimationVisualizer
 	local AnimationVisualizer = require("Features/Game/AnimationVisualizer")
 
+	---@module Features.Game.AnimationLogger
+	local AnimationLogger = require("Features/Game/AnimationLogger")
+
 	---@module Features.Combat.Objects.Defender
 	local Defender = require("Features/Combat/Objects/Defender")
 
@@ -19419,12 +19601,13 @@ return LPH_NO_VIRTUALIZE(function()
 	local FONT = Font.new("rbxasset://fonts/families/RobotoMono.json")
 	local ENTRY_HEIGHT = 40
 	local PANEL_W = 400
-	local PANEL_H = 460
+	local PANEL_H = 520
 
 	-- State.
 	local isInitialized = false
 	local selectedAid = nil
 	local entryFrames = {}
+	local viewMode = "observed"
 
 	-- ScreenGui.
 	local screenGui = CoreGuiManager.imark(Instance.new("ScreenGui"))
@@ -19501,7 +19684,7 @@ return LPH_NO_VIRTUALIZE(function()
 	scrollFrame.BackgroundColor3 = Color3.fromRGB(18, 18, 18)
 	scrollFrame.BorderColor3 = Library.OutlineColor
 	scrollFrame.Position = UDim2.new(0, 4, 0, 48)
-	scrollFrame.Size = UDim2.new(1, -8, 1, -122)
+	scrollFrame.Size = UDim2.new(1, -8, 1, -156)
 	scrollFrame.ScrollBarThickness = 5
 	scrollFrame.ScrollBarImageColor3 = Library.AccentColor
 	scrollFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
@@ -19527,8 +19710,8 @@ return LPH_NO_VIRTUALIZE(function()
 	-- Button container.
 	local btnArea = Instance.new("Frame")
 	btnArea.BackgroundTransparency = 1
-	btnArea.Position = UDim2.new(0, 4, 1, -70)
-	btnArea.Size = UDim2.new(1, -8, 0, 66)
+	btnArea.Position = UDim2.new(0, 4, 1, -104)
+	btnArea.Size = UDim2.new(1, -8, 0, 100)
 	btnArea.Parent = inner
 
 	---Create a styled button.
@@ -19558,10 +19741,26 @@ return LPH_NO_VIRTUALIZE(function()
 	local btnVisualize = makeBtn("Visualize", UDim2.new(0.75, 1, 0, 0), UDim2.new(0.25, -1, 0, 28))
 
 	-- Row 2.
-	local btnClear = makeBtn("Clear", UDim2.new(0, 0, 0, 34), UDim2.new(0.25, -2, 0, 28))
-	local btnCopyDbg = makeBtn("Copy Debug", UDim2.new(0.25, 1, 0, 34), UDim2.new(0.25, -2, 0, 28))
-	local btnDump = makeBtn("Dump Log", UDim2.new(0.5, 1, 0, 34), UDim2.new(0.25, -2, 0, 28))
-	local btnClrDbg = makeBtn("Clr Debug", UDim2.new(0.75, 1, 0, 34), UDim2.new(0.25, -1, 0, 28))
+	local btnBanSel = makeBtn("Ban Sel", UDim2.new(0, 0, 0, 34), UDim2.new(0.25, -2, 0, 28))
+	local btnUnbanSel = makeBtn("Unban Sel", UDim2.new(0.25, 1, 0, 34), UDim2.new(0.25, -2, 0, 28))
+	local btnToggleView = makeBtn("View Banned", UDim2.new(0.5, 1, 0, 34), UDim2.new(0.25, -2, 0, 28))
+	local btnDumpBanned = makeBtn("Dump Banned", UDim2.new(0.75, 1, 0, 34), UDim2.new(0.25, -1, 0, 28))
+
+	-- Row 3.
+	local btnClear = makeBtn("Clear Samples", UDim2.new(0, 0, 0, 68), UDim2.new(0.25, -2, 0, 28))
+	local btnCopyDbg = makeBtn("Copy Debug", UDim2.new(0.25, 1, 0, 68), UDim2.new(0.25, -2, 0, 28))
+	local btnDump = makeBtn("Dump Log", UDim2.new(0.5, 1, 0, 68), UDim2.new(0.25, -2, 0, 28))
+	local btnClrDbg = makeBtn("Clr Debug", UDim2.new(0.75, 1, 0, 68), UDim2.new(0.25, -1, 0, 28))
+
+	local function updateModeButtons()
+		if viewMode == "banned" then
+			btnToggleView.Text = "View Seen"
+			btnClear.Text = "Clr Banned"
+		else
+			btnToggleView.Text = "View Banned"
+			btnClear.Text = "Clear Samples"
+		end
+	end
 
 	---Clear all entry frames from the scroll list.
 	local function clearEntries()
@@ -19586,12 +19785,13 @@ return LPH_NO_VIRTUALIZE(function()
 		end
 	end
 
-	---Create an entry frame for a harvested animation.
+	---Create an entry frame for an observed or banned animation.
 	---@param index number
 	---@param aid string
 	---@param data table
 	---@param solved table?
-	local function createEntry(index, aid, data, solved)
+	---@param banned boolean?
+	local function createEntry(index, aid, data, solved, banned)
 		local frame = Instance.new("TextButton")
 		frame.Name = string.format("%04d", index)
 		frame.BackgroundColor3 = Color3.fromRGB(28, 28, 28)
@@ -19602,12 +19802,12 @@ return LPH_NO_VIRTUALIZE(function()
 		frame.Parent = scrollFrame
 
 		-- Line 1: [Priority] EntityName  rbxassetid://...
-		local priStr = data.meta.priority or "?"
+		local priStr = banned and "BANNED" or (data.meta.priority or "?")
 		local shortAid = aid:match("(%d+)$") or aid
 		local l1 = Instance.new("TextLabel")
 		l1.FontFace = FONT
 		l1.TextColor3 = Library.FontColor
-		l1.Text = string.format("[%s] %s  rbxassetid://%s", priStr, data.meta.entityName, shortAid)
+		l1.Text = string.format("[%s] %s  rbxassetid://%s", priStr, data.meta.entityName or "?", shortAid)
 		l1.BackgroundTransparency = 1
 		l1.Position = UDim2.new(0, 4, 0, 2)
 		l1.Size = UDim2.new(1, -8, 0, 16)
@@ -19618,9 +19818,16 @@ return LPH_NO_VIRTUALIZE(function()
 
 		-- Line 2: sample stats + solve result.
 		local statsText
-		if solved and solved.bestWhen then
+		if banned then
 			statsText = string.format(
-				"n=%d  P=%d p=%d f=%d h=%d | when=%dms | conf=%.0f%%",
+				"seen=%d | samples=%d | blocked from logger + harvester",
+				data.seenCount or 0,
+				data.sampleCount or 0
+			)
+		elseif solved and solved.bestWhen then
+			statsText = string.format(
+				"seen=%d | n=%d  P=%d p=%d f=%d h=%d | when=%dms | conf=%.0f%%",
+				data.seenCount or 0,
 				solved.sampleCount,
 				solved.perfectCount,
 				solved.parryCount,
@@ -19630,7 +19837,11 @@ return LPH_NO_VIRTUALIZE(function()
 				(solved.confidence or 0) * 100
 			)
 		else
-			statsText = string.format("n=%d  (not solvable yet)", solved and solved.sampleCount or 0)
+			statsText = string.format(
+				"seen=%d | n=%d | no-solve",
+				data.seenCount or 0,
+				solved and solved.sampleCount or 0
+			)
 		end
 
 		local l2 = Instance.new("TextLabel")
@@ -19667,28 +19878,58 @@ return LPH_NO_VIRTUALIZE(function()
 	function HarvesterPanel.refresh()
 		clearEntries()
 		selectedAid = nil
+		updateModeButtons()
 
+		if viewMode == "banned" then
+			local banned = TimingHarvester.getBanned()
+			local sorted = {}
+			local bannedCount = 0
+
+			for aid, data in next, banned do
+				bannedCount = bannedCount + 1
+				table.insert(sorted, { aid = aid, data = data })
+			end
+
+			statusLabel.Text = string.format("%d banned animation%s", bannedCount, bannedCount == 1 and "" or "s")
+
+			table.sort(sorted, function(a, b)
+				return (a.data.meta.bannedAt or 0) > (b.data.meta.bannedAt or 0)
+			end)
+
+			for i, entry in ipairs(sorted) do
+				createEntry(i, entry.aid, entry.data, nil, true)
+			end
+			return
+		end
+
+		local observed = TimingHarvester.getObserved()
 		local aidCount, totalSamples = TimingHarvester.counts()
-		statusLabel.Text = string.format(
-			"%d animation%s / %d sample%s",
-			aidCount,
-			aidCount == 1 and "" or "s",
-			totalSamples,
-			totalSamples == 1 and "" or "s"
-		)
-
-		local sampleData = TimingHarvester.getSamples()
+		local observedCount, bannedCount = 0, 0
 		local sorted = {}
-		for aid, data in next, sampleData do
+
+		for aid, data in next, observed do
+			observedCount = observedCount + 1
 			table.insert(sorted, { aid = aid, data = data })
 		end
+
+		for _ in next, TimingHarvester.getBanned() do
+			bannedCount = bannedCount + 1
+		end
+
+		statusLabel.Text = string.format(
+			"%d seen / %d sampled / %d banned",
+			observedCount,
+			aidCount,
+			bannedCount
+		)
+
 		table.sort(sorted, function(a, b)
-			return a.data.meta.firstSeenAt > b.data.meta.firstSeenAt
+			return (a.data.meta.lastSeenAt or 0) > (b.data.meta.lastSeenAt or 0)
 		end)
 
 		for i, entry in ipairs(sorted) do
 			local solved = TimingHarvester.solve(entry.aid)
-			createEntry(i, entry.aid, entry.data, solved)
+			createEntry(i, entry.aid, entry.data, solved, false)
 		end
 	end
 
@@ -19742,6 +19983,7 @@ return LPH_NO_VIRTUALIZE(function()
 
 		for _, btn in next, {
 			btnRefresh, btnPromSel, btnPromAll, btnVisualize,
+			btnBanSel, btnUnbanSel, btnToggleView, btnDumpBanned,
 			btnClear, btnCopyDbg, btnDump, btnClrDbg,
 		} do
 			Library:AddToRegistry(btn, {
@@ -19762,6 +20004,10 @@ return LPH_NO_VIRTUALIZE(function()
 
 		-- Promote selected.
 		btnPromSel.MouseButton1Click:Connect(function()
+			if viewMode ~= "observed" then
+				return Logger.notify("Switch back to the seen list to promote animations.")
+			end
+
 			if not selectedAid then
 				return Logger.notify("Select an animation first.")
 			end
@@ -19777,6 +20023,10 @@ return LPH_NO_VIRTUALIZE(function()
 
 		-- Promote all.
 		btnPromAll.MouseButton1Click:Connect(function()
+			if viewMode ~= "observed" then
+				return Logger.notify("Switch back to the seen list to promote animations.")
+			end
+
 			local s, f = TimingHarvester.promoteAll()
 			Logger.notify("Promoted %d (%d skipped).", s, f)
 			if s > 0 then
@@ -19794,9 +20044,62 @@ return LPH_NO_VIRTUALIZE(function()
 			end
 		end)
 
+		-- Ban selected seen animation.
+		btnBanSel.MouseButton1Click:Connect(function()
+			if viewMode ~= "observed" then
+				return Logger.notify("Switch to the seen list to ban an animation.")
+			end
+
+			if not selectedAid then
+				return Logger.notify("Select an animation first.")
+			end
+
+			local ok, result = TimingHarvester.ban(selectedAid)
+			if ok then
+				AnimationLogger.removeCaptured(selectedAid)
+				HarvesterPanel.refresh()
+			else
+				Logger.notify(result)
+			end
+		end)
+
+		-- Unban selected animation.
+		btnUnbanSel.MouseButton1Click:Connect(function()
+			if viewMode ~= "banned" then
+				return Logger.notify("Switch to the banned list to unban an animation.")
+			end
+
+			if not selectedAid then
+				return Logger.notify("Select a banned animation first.")
+			end
+
+			local ok, result = TimingHarvester.unban(selectedAid)
+			if ok then
+				HarvesterPanel.refresh()
+			else
+				Logger.notify(result)
+			end
+		end)
+
+		-- Toggle between seen and banned animation views.
+		btnToggleView.MouseButton1Click:Connect(function()
+			viewMode = viewMode == "observed" and "banned" or "observed"
+			HarvesterPanel.refresh()
+		end)
+
+		-- Dump banned list.
+		btnDumpBanned.MouseButton1Click:Connect(function()
+			TimingHarvester.dumpBanned()
+		end)
+
 		-- Clear all samples.
 		btnClear.MouseButton1Click:Connect(function()
-			TimingHarvester.clear()
+			if viewMode == "banned" then
+				TimingHarvester.clearBanned()
+			else
+				TimingHarvester.clear()
+			end
+
 			selectedAid = nil
 			HarvesterPanel.refresh()
 		end)

@@ -34,12 +34,70 @@ return LPH_NO_VIRTUALIZE(function()
 	-- Sample DB: [aid] = { meta = { aid, entityName, firstSeenAt }, pressSamples = {...}, hitSamples = {...} }
 	local samples = {}
 
+	-- Observed combat animations, even if they never produced usable samples.
+	-- Key: animation ID, Value: { meta = { aid, entityName, priority, firstSeenAt, lastSeenAt }, seenCount = number }
+	local observedAnims = {}
+
+	-- User-banned animation IDs that should be ignored by logger + harvester.
+	-- Key: animation ID, Value: { meta = {...}, sampleCount = number, seenCount = number }
+	local bannedAnims = {}
+
 	-- Tuning constants.
 	local MAX_RECENT_ANIMS = 24
 	local ANIM_LOOKBACK_S = 2.0
 	local MAX_PRESS_OFFSET_S = 1.5
 	local OUTCOME_WAIT_S = 0.5
 	local ATTRIB_MAX_DISTANCE = 60
+
+	---Count samples for a given animation id.
+	---@param aid string
+	---@return number
+	local function sampleCountFor(aid)
+		local b = samples[aid]
+		if not b then
+			return 0
+		end
+
+		return #b.pressSamples + #b.hitSamples
+	end
+
+	---Track that an animation id was observed in combat.
+	---@param aid string
+	---@param entityName string
+	---@param priority string?
+	local function markObserved(aid, entityName, priority)
+		local info = observedAnims[aid]
+		if not info then
+			info = {
+				meta = {
+					aid = aid,
+					entityName = entityName,
+					priority = priority or "?",
+					firstSeenAt = tick(),
+					lastSeenAt = tick(),
+				},
+				seenCount = 0,
+			}
+			observedAnims[aid] = info
+		end
+
+		info.meta.entityName = entityName or info.meta.entityName or "?"
+		info.meta.priority = priority or info.meta.priority or "?"
+		info.meta.lastSeenAt = tick()
+		info.seenCount = (info.seenCount or 0) + 1
+	end
+
+	---Remove all recent buffered animation starts for an animation id.
+	---@param aid string
+	local function pruneRecent(aid)
+		local filtered = {}
+		for _, entry in ipairs(recentAnims) do
+			if entry.aid ~= aid then
+				table.insert(filtered, entry)
+			end
+		end
+		recentAnims = filtered
+	end
 
 	---Get full RTT in seconds from Stats.Network.ServerStatsItem."Data Ping" (ms).
 	---@return number
@@ -98,6 +156,10 @@ return LPH_NO_VIRTUALIZE(function()
 
 		for i = #recentAnims, 1, -1 do
 			local a = recentAnims[i]
+			if bannedAnims[a.aid] then
+				continue
+			end
+
 			if a.t0 < cutoff then
 				break
 			end
@@ -159,6 +221,10 @@ return LPH_NO_VIRTUALIZE(function()
 			return
 		end
 
+		if bannedAnims[aid] then
+			return
+		end
+
 		-- Skip non-combat animations (Idle, Movement, Core).
 		if track and track.Priority then
 			local pri = track.Priority
@@ -168,6 +234,8 @@ return LPH_NO_VIRTUALIZE(function()
 				return
 			end
 		end
+
+		markObserved(aid, entity and entity.Name or "?", (track and track.Priority) and track.Priority.Name or "?")
 
 		table.insert(recentAnims, {
 			aid = aid,
@@ -181,6 +249,105 @@ return LPH_NO_VIRTUALIZE(function()
 		})
 
 		if #recentAnims > MAX_RECENT_ANIMS then
+
+	---Return whether an animation id is banned.
+	---@param aid string
+	---@return boolean
+	function TimingHarvester.isBanned(aid)
+		return bannedAnims[aid] ~= nil
+	end
+
+	---Get observed combat animations.
+	---@return table
+	function TimingHarvester.getObserved()
+		return observedAnims
+	end
+
+	---Get banned animations.
+	---@return table
+	function TimingHarvester.getBanned()
+		return bannedAnims
+	end
+
+	---Ban an animation id and remove any current harvested data for it.
+	---@param aid string
+	---@return boolean, string
+	function TimingHarvester.ban(aid)
+		if not aid or aid == "" then
+			return false, "Invalid animation id."
+		end
+
+		if bannedAnims[aid] then
+			return false, string.format("Animation already banned: %s", aid)
+		end
+
+		local observed = observedAnims[aid]
+		local sample = samples[aid]
+		local entityName = (sample and sample.meta.entityName)
+			or (observed and observed.meta.entityName)
+			or "?"
+		local priority = (sample and sample.meta.priority)
+			or (observed and observed.meta.priority)
+			or "?"
+
+		bannedAnims[aid] = {
+			meta = {
+				aid = aid,
+				entityName = entityName,
+				priority = priority,
+				bannedAt = tick(),
+			},
+			sampleCount = sampleCountFor(aid),
+			seenCount = observed and observed.seenCount or 0,
+		}
+
+		samples[aid] = nil
+		observedAnims[aid] = nil
+		pruneRecent(aid)
+
+		Logger.notify("[Harvester] Banned '%s' (%s).", entityName, aid)
+		return true, aid
+	end
+
+	---Unban an animation id. It will be observed again next time it plays.
+	---@param aid string
+	---@return boolean, string
+	function TimingHarvester.unban(aid)
+		local banned = bannedAnims[aid]
+		if not banned then
+			return false, string.format("Animation is not banned: %s", tostring(aid))
+		end
+
+		bannedAnims[aid] = nil
+		Logger.notify("[Harvester] Unbanned '%s' (%s).", banned.meta.entityName or "?", aid)
+		return true, aid
+	end
+
+	---Clear all banned animation ids.
+	function TimingHarvester.clearBanned()
+		bannedAnims = {}
+		Logger.notify("[Harvester] Cleared banned animation list.")
+	end
+
+	---Dump banned animations to the logger.
+	function TimingHarvester.dumpBanned()
+		local count = 0
+		for aid, info in next, bannedAnims do
+			count = count + 1
+			Logger.warn(
+				"[Harvester][Banned] %s %s: seen=%d samples=%d priority=%s",
+				info.meta.entityName or "?",
+				aid,
+				info.seenCount or 0,
+				info.sampleCount or 0,
+				info.meta.priority or "?"
+			)
+		end
+
+		if count == 0 then
+			Logger.warn("[Harvester][Banned] no banned animations.")
+		end
+	end
 			table.remove(recentAnims, 1)
 		end
 	end
@@ -633,7 +800,7 @@ return LPH_NO_VIRTUALIZE(function()
 		samples = {}
 		recentAnims = {}
 		pendingPress = nil
-		Logger.notify("[Harvester] Cleared all samples.")
+		Logger.notify("[Harvester] Cleared all harvested samples.")
 	end
 
 	---Return live totals for UI display.
@@ -675,6 +842,8 @@ return LPH_NO_VIRTUALIZE(function()
 		harvesterMaid:clean()
 		damageMaid:clean()
 		samples = {}
+		observedAnims = {}
+		bannedAnims = {}
 		recentAnims = {}
 		pendingPress = nil
 		isInit = false

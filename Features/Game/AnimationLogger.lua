@@ -137,6 +137,10 @@ return LPH_NO_VIRTUALIZE(function()
 
 			local aid = track.Animation and track.Animation.AnimationId or "Unknown"
 
+			if TimingHarvester.isBanned(aid) then
+				return
+			end
+
 			-- Feed the timing harvester unconditionally (self-gated by EnableTimingHarvester + its own distance filter).
 			TimingHarvester.onAnimationStart(aid, entity, track)
 
@@ -292,6 +296,12 @@ return LPH_NO_VIRTUALIZE(function()
 	---Clear all captured animations.
 	function AnimationLogger.clearCaptured()
 		capturedAnimations = {}
+	end
+
+	---Remove a captured animation by animation id.
+	---@param aid string
+	function AnimationLogger.removeCaptured(aid)
+		capturedAnimations[aid] = nil
 	end
 
 	---Generate an AnimationTiming from a captured animation and push it into the config.
