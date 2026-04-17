@@ -451,7 +451,7 @@ function AttributeListener.parryStatus()
 
 	local remainingMs = AttributeListener.parryRemainingMs()
 	local activeStates = AttributeListener.activeStates()
-	local reason = remainingMs > 0 and "synthetic-cooldown" or "ready"
+	local reason = remainingMs > 0 and "fallback-cooldown" or "fallback-ready"
 
 	return {
 		canParry = remainingMs <= 0,
@@ -486,7 +486,7 @@ function AttributeListener.dashStatus()
 	end
 
 	local remainingMs = AttributeListener.dashRemainingMs()
-	local reason = remainingMs > 0 and "synthetic-cooldown" or "ready"
+	local reason = remainingMs > 0 and "fallback-cooldown" or "fallback-ready"
 
 	return {
 		canDash = remainingMs <= 0,

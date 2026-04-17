@@ -246,16 +246,6 @@ function CombatTab.initAutoDefenseSection(groupbox)
 		Rounding = 0,
 	})
 
-	autoDefenseDepBox:AddSlider("SyntheticParryCooldownMs", {
-		Text = "Synthetic Parry Cooldown",
-		Tooltip = "Local fallback parry lockout after a parry attempt when the game does not confirm success. Lower this if chained parries are being blocked too long.",
-		Min = 0,
-		Max = 2000,
-		Default = 500,
-		Suffix = "ms",
-		Rounding = 0,
-	})
-
 	autoDefenseDepBox:AddToggle("DeflectBlockFallback", {
 		Text = "Deflect Block Fallback",
 		Default = false,

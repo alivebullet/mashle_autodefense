@@ -9384,7 +9384,7 @@ function AttributeListener.parryStatus()
 
 	local remainingMs = AttributeListener.parryRemainingMs()
 	local activeStates = AttributeListener.activeStates()
-	local reason = remainingMs > 0 and "synthetic-cooldown" or "ready"
+	local reason = remainingMs > 0 and "fallback-cooldown" or "fallback-ready"
 
 	return {
 		canParry = remainingMs <= 0,
@@ -9419,7 +9419,7 @@ function AttributeListener.dashStatus()
 	end
 
 	local remainingMs = AttributeListener.dashRemainingMs()
-	local reason = remainingMs > 0 and "synthetic-cooldown" or "ready"
+	local reason = remainingMs > 0 and "fallback-cooldown" or "fallback-ready"
 
 	return {
 		canDash = remainingMs <= 0,
@@ -23436,16 +23436,6 @@ function CombatTab.initAutoDefenseSection(groupbox)
 		Min = 0,
 		Max = 150,
 		Default = 45,
-		Suffix = "ms",
-		Rounding = 0,
-	})
-
-	autoDefenseDepBox:AddSlider("SyntheticParryCooldownMs", {
-		Text = "Synthetic Parry Cooldown",
-		Tooltip = "Local fallback parry lockout after a parry attempt when the game does not confirm success. Lower this if chained parries are being blocked too long.",
-		Min = 0,
-		Max = 2000,
-		Default = 500,
 		Suffix = "ms",
 		Rounding = 0,
 	})
