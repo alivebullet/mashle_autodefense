@@ -64,24 +64,75 @@ local MAX_REPEAT_WAIT = 10.0
 local PREDICTION_LENIENCY_MULTI = 5.0
 local NOTIFY_DEDUP_WINDOW = 1.0
 local DEFAULT_AUTO_PARRY_LEAD_MS = 45
+local DEFAULT_AUTO_DASH_LEAD_MS = 90
 
 -- Notification de-duplication.
 local lastNotifyTimes = {}
 
 ---Return the configured lead time for parry actions.
----@param action Action?
+---@param optionName string
+---@param defaultLeadMs number
 ---@return number
-local function parryLeadSeconds(action)
-	if not action or PP_SCRAMBLE_STR(action._type) ~= "Parry" then
-		return 0
-	end
-
-	local leadMs = Configuration.expectOptionValue("AutoParryLeadMs")
+local function configuredLeadSeconds(optionName, defaultLeadMs)
+	local leadMs = Configuration.expectOptionValue(optionName)
 	if type(leadMs) ~= "number" or leadMs <= 0 then
-		leadMs = DEFAULT_AUTO_PARRY_LEAD_MS
+		leadMs = defaultLeadMs
 	end
 
 	return math.clamp(leadMs, 0, 150) / 1000
+end
+
+---Return the configured lead time for an action.
+---@param action Action?
+---@param plannedDash boolean?
+---@return number
+local function actionLeadSeconds(action, plannedDash)
+	if not action then
+		return 0
+	end
+
+	local actionType = PP_SCRAMBLE_STR(action._type)
+	if actionType == "Dash" or plannedDash then
+		return configuredLeadSeconds("AutoDashLeadMs", DEFAULT_AUTO_DASH_LEAD_MS)
+	end
+
+	if actionType == "Parry" then
+		return configuredLeadSeconds("AutoParryLeadMs", DEFAULT_AUTO_PARRY_LEAD_MS)
+	end
+
+	return 0
+end
+
+---Predict whether a parry action should be scheduled on the dash lead because parry will still be cooling down.
+---@param self Defender
+---@param timing Timing
+---@param action Action?
+---@param rdelay number
+---@param sdelay number
+---@return boolean
+local function shouldAnticipateDash(self, timing, action, rdelay, sdelay)
+	if not action or PP_SCRAMBLE_STR(action._type) ~= "Parry" then
+		return false
+	end
+
+	if timing.ndfb or not Configuration.expectToggleValue("DashOnParryCooldown") then
+		return false
+	end
+
+	local dashStatus = AttributeListener.dashStatus()
+	if not dashStatus.canDash then
+		return false
+	end
+
+	local parryStatus = AttributeListener.parryStatus()
+	if parryStatus.canParry then
+		return false
+	end
+
+	local parryLead = actionLeadSeconds(action, false)
+	local timeUntilParryMs = math.max(0, math.round((action:when() - parryLead - rdelay - sdelay) * 1000))
+
+	return (parryStatus.remainingMs or 0) >= timeUntilParryMs
 end
 
 ---Log a miss to the UI library with distance check.
@@ -588,21 +639,23 @@ end)
 ---@param timing Timing
 ---@param action Action
 ---@param notify boolean
-Defender.handle = LPH_NO_VIRTUALIZE(function(self, timing, action, notify)
+---@param plannedDash boolean?
+Defender.handle = LPH_NO_VIRTUALIZE(function(self, timing, action, notify, plannedDash)
 	local dbg = Configuration.expectToggleValue("EnableDefenseDebug")
 	local actionType = PP_SCRAMBLE_STR(action._type)
 	local actionWhenMs = math.round((action:when() or 0) * 1000)
-	local actionLeadMs = math.round(parryLeadSeconds(action) * 1000)
+	local actionLeadMs = math.round(actionLeadSeconds(action, plannedDash) * 1000)
 	local scheduledWhenMs = math.max(0, actionWhenMs - actionLeadMs)
+	local resolvedActionType = plannedDash and actionType == "Parry" and "Dash" or actionType
 
 	if not self:valid(timing, action) then
 		return
 	end
 
 	if dbg then
-		if actionType == "Parry" and actionLeadMs > 0 then
-			Defender.dbg("HANDLE executing type='%s' timing='%s' when=%dms scheduled=%dms lead=%dms",
-				actionType, PP_SCRAMBLE_STR(timing.name),
+		if actionLeadMs > 0 then
+			Defender.dbg("HANDLE executing type='%s' resolved='%s' timing='%s' when=%dms scheduled=%dms lead=%dms",
+				actionType, resolvedActionType, PP_SCRAMBLE_STR(timing.name),
 				actionWhenMs, scheduledWhenMs, actionLeadMs)
 		else
 			Defender.dbg("HANDLE executing type='%s' timing='%s' when=%dms",
@@ -613,6 +666,19 @@ Defender.handle = LPH_NO_VIRTUALIZE(function(self, timing, action, notify)
 
 	if not notify then
 		self:notify(timing, "Action type '%s' is being executed.", actionType)
+	end
+
+	---Block fallback function. Returns whether the fallback was successful.
+	---@return boolean
+	local function blockFallback()
+		if not Configuration.expectToggleValue("DeflectBlockFallback") then
+			return false
+		end
+
+		Defender:notify(timing, "Action fallback 'Parry' is using block frames.")
+		InputClient.deflect()
+
+		return true
 	end
 
 	-- Dash instead of parry.
@@ -637,6 +703,29 @@ Defender.handle = LPH_NO_VIRTUALIZE(function(self, timing, action, notify)
 
 	if actionType == "End Block" then
 		return self:bend()
+	end
+
+	if plannedDash and actionType == "Parry" then
+		if not AttributeListener.cdash() then
+			if dbg then
+				local dashStatus = AttributeListener.dashStatus()
+				Defender.dbg(
+					"ANTICIPATED DASH BLOCKED reason=%s remaining=%dms cooldown=%s path=%s for '%s'",
+					dashStatus.reason,
+					dashStatus.remainingMs or 0,
+					dashStatus.cooldownName or "-",
+					dashStatus.cooldownPath or "-",
+					PP_SCRAMBLE_STR(timing.name)
+				)
+			end
+
+			return blockFallback()
+				or self:notify(timing, "Anticipated dash fallback blocked because we are unable to dash.")
+		end
+
+		self:notify(timing, "Action type 'Parry' anticipated to 'Dash' type.")
+
+		return InputClient.dash()
 	end
 
 	if actionType == "Dash" then
@@ -685,19 +774,6 @@ Defender.handle = LPH_NO_VIRTUALIZE(function(self, timing, action, notify)
 			parryStatus.cooldownPath or parryStatus.hudPath or "-",
 			PP_SCRAMBLE_STR(timing.name)
 		)
-	end
-
-	---Block fallback function. Returns whether the fallback was successful.
-	---@return boolean
-	local function blockFallback()
-		if not Configuration.expectToggleValue("DeflectBlockFallback") then
-			return false
-		end
-
-		Defender:notify(timing, "Action fallback 'Parry' is using block frames.")
-		InputClient.deflect()
-
-		return true
 	end
 
 	-- Dodge fallback.
@@ -846,12 +922,13 @@ Defender.action = LPH_NO_VIRTUALIZE(function(self, timing, action)
 
 	-- Get initial receive delay.
 	local rdelay = self.rdelay()
-	local actionLead = parryLeadSeconds(action)
+	local plannedDash = shouldAnticipateDash(self, timing, action, rdelay, self.sdelay())
+	local actionLead = actionLeadSeconds(action, plannedDash)
 
 	-- Add action.
 	self:mark(Task.new(PP_SCRAMBLE_STR(action._type), function()
 		return math.max(0, action:when() - actionLead - rdelay - self.sdelay())
-	end, timing.punishable, timing.after, self.handle, self, timing, action))
+	end, timing.punishable, timing.after, self.handle, self, timing, action, nil, plannedDash))
 
 	-- Log.
 	if not LRM_UserNote or LRM_UserNote == "tester" then

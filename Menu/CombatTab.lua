@@ -246,6 +246,16 @@ function CombatTab.initAutoDefenseSection(groupbox)
 		Rounding = 0,
 	})
 
+	autoDefenseDepBox:AddSlider("AutoDashLeadMs", {
+		Text = "Auto Dash Lead",
+		Tooltip = "Runs dash actions slightly before the stored timing. Increase this if dash fallback still feels late.",
+		Min = 0,
+		Max = 150,
+		Default = 90,
+		Suffix = "ms",
+		Rounding = 0,
+	})
+
 	autoDefenseDepBox:AddToggle("DeflectBlockFallback", {
 		Text = "Deflect Block Fallback",
 		Default = false,
