@@ -19,17 +19,14 @@ local GameTab = require("Menu/GameTab")
 ---@module Menu.BuilderTab
 local BuilderTab = require("Menu/BuilderTab")
 
+---@module Menu.ConfigViewerTab
+local ConfigViewerTab = require("Menu/ConfigViewerTab")
+
 ---@module Menu.VisualsTab
 local VisualsTab = require("Menu/VisualsTab")
 
 ---@module Menu.LycorisTab
 local LycorisTab = require("Menu/LycorisTab")
-
----@module Menu.AutomationTab
-local AutomationTab = require("Menu/AutomationTab")
-
----@module Menu.ExploitTab
-local ExploitTab = require("Menu/ExploitTab")
 
 ---@module Utility.Logger
 local Logger = require("Utility/Logger")
@@ -133,10 +130,9 @@ function Menu.init()
 	-- Initialize all tabs.
 	CombatTab.init(window)
 	BuilderTab.init(window)
+	ConfigViewerTab.init(window)
 	GameTab.init(window)
 	VisualsTab.init(window)
-	ExploitTab.init(window)
-	AutomationTab.init(window)
 	LycorisTab.init(window)
 
 	-- Last update.
