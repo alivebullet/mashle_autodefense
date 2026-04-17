@@ -311,12 +311,13 @@ return LPH_NO_VIRTUALIZE(function()
 			return
 		end
 
-		-- Skip non-combat animations (Idle, Movement, Core).
+		-- Skip non-combat animations. Movement priority is usually locomotion noise,
+		-- but some Mashle NPC attacks also use Movement while remaining non-looped.
 		if track and track.Priority then
 			local pri = track.Priority
 			if pri == Enum.AnimationPriority.Core
 				or pri == Enum.AnimationPriority.Idle
-				or pri == Enum.AnimationPriority.Movement then
+				or (pri == Enum.AnimationPriority.Movement and track.Looped ~= false) then
 				return
 			end
 		end
