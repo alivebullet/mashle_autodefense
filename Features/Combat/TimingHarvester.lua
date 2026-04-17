@@ -70,6 +70,10 @@ return LPH_NO_VIRTUALIZE(function()
 	---@param entity Model?
 	---@return number?
 	local function distanceTo(entity)
+		if typeof(entity) ~= "Instance" then
+			return nil
+		end
+
 		local localChar = players.LocalPlayer and players.LocalPlayer.Character
 		if not localChar or not localChar.PrimaryPart or not entity then
 			return nil
@@ -86,29 +90,29 @@ return LPH_NO_VIRTUALIZE(function()
 
 	---Check whether the harvester should consider an entity at its current distance.
 	---@param entity Model?
-	---@return boolean, number?
+	---@return boolean, number?, Instance?
 	local function shouldTrackEntity(entity)
-		if not entity then
-			return false, nil
+		if typeof(entity) ~= "Instance" then
+			return false, nil, nil
 		end
 
 		local distance = distanceTo(entity)
 		if not distance then
-			return false, nil
+			return false, nil, entity
 		end
 
 		if Configuration.expectToggleValue("TimingHarvesterIgnorePlayers") ~= false then
 			local player = players:GetPlayerFromCharacter(entity)
 			if player then
-				return false, distance
+				return false, distance, entity
 			end
 		end
 
 		if distance < harvesterMinDistance() or distance > harvesterMaxDistance() then
-			return false, distance
+			return false, distance, entity
 		end
 
-		return true, distance
+		return true, distance, entity
 	end
 
 	---Count samples for a given animation id.
@@ -269,7 +273,7 @@ return LPH_NO_VIRTUALIZE(function()
 			return
 		end
 
-		local trackEntity, currentDistance = shouldTrackEntity(entity)
+		local trackEntity, currentDistance, resolvedEntity = shouldTrackEntity(entity)
 		if not trackEntity then
 			return
 		end
@@ -284,12 +288,12 @@ return LPH_NO_VIRTUALIZE(function()
 			end
 		end
 
-		markObserved(aid, entity and entity.Name or "?", (track and track.Priority) and track.Priority.Name or "?")
+		markObserved(aid, resolvedEntity and resolvedEntity.Name or "?", (track and track.Priority) and track.Priority.Name or "?")
 
 		table.insert(recentAnims, {
 			aid = aid,
-			entity = entity,
-			entityName = entity and entity.Name or "?",
+			entity = resolvedEntity,
+			entityName = resolvedEntity and resolvedEntity.Name or "?",
 			t0 = tick(),
 			speed = (track and track.Speed) or 1.0,
 			length = (track and track.Length) or 0,
