@@ -364,10 +364,44 @@ function BuilderTab.initHarvesterSection(groupbox)
 		Tooltip = "Records combat animations + damage hits to solve parry timings. Only tracks Action+ priority.",
 	})
 
+	groupbox:AddToggle("TimingHarvesterIgnorePlayers", {
+		Text = "Ignore Player Animations",
+		Default = true,
+		Tooltip = "When enabled, the timing harvester ignores other players and only records non-player entities in range.",
+	})
+
+	groupbox:AddSlider("TimingHarvesterMinDistance", {
+		Text = "Harvester Min Distance",
+		Min = 0,
+		Max = 200,
+		Rounding = 0,
+		Suffix = "m",
+		Default = 0,
+	})
+
+	groupbox:AddSlider("TimingHarvesterMaxDistance", {
+		Text = "Harvester Max Distance",
+		Min = 0,
+		Max = 200,
+		Rounding = 0,
+		Suffix = "m",
+		Default = 60,
+	})
+
 	groupbox:AddInput("HarvestedAutoSaveConfigName", {
 		Text = "Auto Save Config Name",
 		Tooltip = "Optional: if set, promoted timings are immediately written to this config file.",
 		Placeholder = "example: mashle_autogen",
+	})
+
+	groupbox:AddButton({
+		Text = "Reset Harvester",
+		DoubleClick = true,
+		Func = function()
+			TimingHarvester.clearAll()
+			HarvesterPanel.refresh()
+			Library:Notify("Reset all harvester data.")
+		end,
 	})
 
 	groupbox:AddButton("Open Harvester Panel", function()

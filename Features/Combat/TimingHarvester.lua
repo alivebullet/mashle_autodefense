@@ -49,6 +49,50 @@ return LPH_NO_VIRTUALIZE(function()
 	local OUTCOME_WAIT_S = 0.5
 	local ATTRIB_MAX_DISTANCE = 60
 
+	---Get the current harvester minimum distance.
+	---@return number
+	local function harvesterMinDistance()
+		return Configuration.expectOptionValue("TimingHarvesterMinDistance") or 0
+	end
+
+	---Get the current harvester maximum distance.
+	---@return number
+	local function harvesterMaxDistance()
+		local value = Configuration.expectOptionValue("TimingHarvesterMaxDistance")
+		if type(value) ~= "number" or value <= 0 then
+			return ATTRIB_MAX_DISTANCE
+		end
+
+		return value
+	end
+
+	---Check whether the harvester should consider an entity at its current distance.
+	---@param entity Model?
+	---@return boolean, number?
+	local function shouldTrackEntity(entity)
+		if not entity then
+			return false, nil
+		end
+
+		local distance = distanceTo(entity)
+		if not distance then
+			return false, nil
+		end
+
+		if Configuration.expectToggleValue("TimingHarvesterIgnorePlayers") ~= false then
+			local player = players:GetPlayerFromCharacter(entity)
+			if player then
+				return false, distance
+			end
+		end
+
+		if distance < harvesterMinDistance() or distance > harvesterMaxDistance() then
+			return false, distance
+		end
+
+		return true, distance
+	end
+
 	---Count samples for a given animation id.
 	---@param aid string
 	---@return number
@@ -225,6 +269,11 @@ return LPH_NO_VIRTUALIZE(function()
 			return
 		end
 
+		local trackEntity, currentDistance = shouldTrackEntity(entity)
+		if not trackEntity then
+			return
+		end
+
 		-- Skip non-combat animations (Idle, Movement, Core).
 		if track and track.Priority then
 			local pri = track.Priority
@@ -244,7 +293,7 @@ return LPH_NO_VIRTUALIZE(function()
 			t0 = tick(),
 			speed = (track and track.Speed) or 1.0,
 			length = (track and track.Length) or 0,
-			distance = distanceTo(entity),
+			distance = currentDistance,
 			priority = (track and track.Priority) and track.Priority.Name or "?",
 		})
 
@@ -801,6 +850,16 @@ return LPH_NO_VIRTUALIZE(function()
 		recentAnims = {}
 		pendingPress = nil
 		Logger.notify("[Harvester] Cleared all harvested samples.")
+	end
+
+	---Clear all harvester state, including seen and banned animation ids.
+	function TimingHarvester.clearAll()
+		samples = {}
+		observedAnims = {}
+		bannedAnims = {}
+		recentAnims = {}
+		pendingPress = nil
+		Logger.notify("[Harvester] Reset all harvester data.")
 	end
 
 	---Return live totals for UI display.
