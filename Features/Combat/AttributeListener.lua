@@ -7,6 +7,9 @@ local Maid = require("Utility/Maid")
 ---@module Utility.Signal
 local Signal = require("Utility/Signal")
 
+---@module Features.Combat.TimingHarvester
+local TimingHarvester = require("Features/Combat/TimingHarvester")
+
 -- Services.
 local players = game:GetService("Players")
 
@@ -22,9 +25,11 @@ local stateMaid = Maid.new()
 local WATCHED = {
 	Parry = function()
 		AttributeListener.lastParry = tick()
+		TimingHarvester.onParryResult(false)
 	end,
 	PerfectParry = function()
 		AttributeListener.lastParry = tick()
+		TimingHarvester.onParryResult(true)
 	end,
 	DashDodge = function()
 		AttributeListener.lastDash = tick()

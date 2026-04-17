@@ -9,6 +9,9 @@ local replicatedStorage = game:GetService("ReplicatedStorage")
 ---@module Utility.Configuration
 local Configuration = require("Utility/Configuration")
 
+---@module Features.Combat.TimingHarvester
+local TimingHarvester = require("Features/Combat/TimingHarvester")
+
 ---Deflect. This is called this way because it can either give parry or block frames depending on whether or not parry is on cooldown.
 function InputClient.deflect()
 	InputClient.block(true)
@@ -80,6 +83,7 @@ function InputClient.parry()
 		return
 	end
 
+	TimingHarvester.onParryPress()
 	requestModule:FireServer("Misc", "Parry")
 end
 

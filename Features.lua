@@ -22,6 +22,9 @@ local AnimationLogger = require("Features/Game/AnimationLogger")
 ---@modules Features.Combat.AttributeListener
 local AttributeListener = require("Features/Combat/AttributeListener")
 
+---@module Features.Combat.TimingHarvester
+local TimingHarvester = require("Features/Combat/TimingHarvester")
+
 ---@module Features.Game.Monitoring
 local Monitoring = require("Features/Game/Monitoring")
 
@@ -42,6 +45,7 @@ local Input = require("Features/Automation/Input")
 function Features.init()
 	Monitoring.init()
 	AttributeListener.init()
+	TimingHarvester.init()
 	Defense.init()
 	Visuals.init()
 	Movement.init()
@@ -62,6 +66,7 @@ function Features.detach()
 
 	Monitoring.detach()
 	AttributeListener.detach()
+	TimingHarvester.detach()
 	Defense.detach()
 	Movement.detach()
 	Visuals.detach()

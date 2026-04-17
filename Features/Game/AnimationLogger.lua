@@ -28,6 +28,9 @@ return LPH_NO_VIRTUALIZE(function()
 	---@module Game.DynamicTiming
 	local DynamicTiming = require("Game/DynamicTiming")
 
+	---@module Features.Combat.TimingHarvester
+	local TimingHarvester = require("Features/Combat/TimingHarvester")
+
 	-- Services.
 	local players = game:GetService("Players")
 
@@ -137,6 +140,9 @@ return LPH_NO_VIRTUALIZE(function()
 			end
 
 			local aid = track.Animation and track.Animation.AnimationId or "Unknown"
+
+			-- Feed the timing harvester (self-gated by EnableTimingHarvester).
+			TimingHarvester.onAnimationStart(aid, entity, track)
 
 			-- Log the animation play event.
 			if inLogRange then
