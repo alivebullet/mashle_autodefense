@@ -349,7 +349,7 @@ return LPH_NO_VIRTUALIZE(function()
 			return nil
 		end
 
-		local perfectWhens, parryWhens, failWhens, hitWhens, distances = {}, {}, {}, {}, {}
+		local perfectWhens, parryWhens, failWhens, hitWhens, distances, pings = {}, {}, {}, {}, {}, {}
 
 		for _, s in ipairs(b.pressSamples) do
 			if s.parried then
@@ -364,12 +364,20 @@ return LPH_NO_VIRTUALIZE(function()
 			if s.distance then
 				table.insert(distances, s.distance)
 			end
+
+			if s.ping then
+				table.insert(pings, s.ping)
+			end
 		end
 
 		for _, s in ipairs(b.hitSamples) do
 			table.insert(hitWhens, s.when)
 			if s.distance then
 				table.insert(distances, s.distance)
+			end
+
+			if s.ping then
+				table.insert(pings, s.ping)
 			end
 		end
 
@@ -413,6 +421,7 @@ return LPH_NO_VIRTUALIZE(function()
 				lo = percentile(hitWhens, 0.1),
 				hi = percentile(hitWhens, 0.9),
 			},
+			medianPingMs = (median(pings) or 0) * 1000,
 			minDistance = minDist,
 			maxDistance = maxDist,
 			-- Confidence scales with successful parry count.
@@ -500,6 +509,14 @@ return LPH_NO_VIRTUALIZE(function()
 		local AnimationTiming = require("Game/Timings/AnimationTiming")
 		local Action = require("Game/Timings/Action")
 
+		local function getParryAction(timing)
+			for _, action in next, timing.actions:get() do
+				if action._type == "Parry" then
+					return action
+				end
+			end
+		end
+
 		local solved = TimingHarvester.solve(aid)
 		if not solved then
 			return false, "No samples for aid: " .. tostring(aid)
@@ -513,9 +530,36 @@ return LPH_NO_VIRTUALIZE(function()
 			return false, "SaveManager not ready."
 		end
 
-		local existing = SaveManager.as:index(aid)
-		if existing then
-			return false, string.format("Timing already exists for '%s' (%s).", aid, existing.name)
+		local whenMs = math.round(solved.bestWhen * 1000)
+		local profilePingMs = math.max(0, math.round(solved.medianPingMs or (rttSeconds() * 1000)))
+		local existingConfig = SaveManager.as.config and SaveManager.as.config.timings[aid]
+
+		if existingConfig then
+			local action = getParryAction(existingConfig)
+			if not action then
+				action = Action.new()
+				action.name = string.format("Action_Harvested_n%d", solved.sampleCount)
+				action._type = "Parry"
+				action.hitbox = Vector3.new(20, 20, 30)
+				action.ihbc = false
+				existingConfig.actions:push(action)
+			end
+
+			action._when = PP_SCRAMBLE_RE_NUM(whenMs)
+			action:addPingProfile(profilePingMs, whenMs, solved.sampleCount)
+
+			existingConfig.imdd = math.max(0, math.min(existingConfig.imdd or solved.minDistance, solved.minDistance))
+			existingConfig.imxd = math.max(existingConfig.imxd or solved.maxDistance, solved.maxDistance)
+
+			Logger.notify(
+				"[Harvester] Updated '%s' with %.0fms @ %dms RTT (%d profiles).",
+				existingConfig.name,
+				solved.bestWhen * 1000,
+				profilePingMs,
+				#(action.pingProfiles or {})
+			)
+
+			return true, existingConfig.name
 		end
 
 		local name = timingName
@@ -543,9 +587,10 @@ return LPH_NO_VIRTUALIZE(function()
 		local action = Action.new()
 		action.name = string.format("Action_Harvested_n%d", solved.sampleCount)
 		action._type = "Parry"
-		action._when = PP_SCRAMBLE_RE_NUM(math.round(solved.bestWhen * 1000))
+		action._when = PP_SCRAMBLE_RE_NUM(whenMs)
 		action.hitbox = Vector3.new(20, 20, 30)
 		action.ihbc = false
+		action:addPingProfile(profilePingMs, whenMs, solved.sampleCount)
 		timing.actions:push(action)
 
 		local ok, err = pcall(SaveManager.as.config.push, SaveManager.as.config, timing)
@@ -554,9 +599,10 @@ return LPH_NO_VIRTUALIZE(function()
 		end
 
 		Logger.notify(
-			"[Harvester] Promoted '%s' when=%.0fms (n=%d perfect=%d parry=%d conf=%.2f).",
+			"[Harvester] Promoted '%s' when=%.0fms @ %dms RTT (n=%d perfect=%d parry=%d conf=%.2f).",
 			name,
 			solved.bestWhen * 1000,
+			profilePingMs,
 			solved.sampleCount,
 			solved.perfectCount,
 			solved.parryCount,

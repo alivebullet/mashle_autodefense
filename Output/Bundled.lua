@@ -7474,13 +7474,119 @@ __bundle_register("Game/Timings/Action", function(require, _LOADED, __bundle_reg
 ---@field hitbox Vector3 The hitbox of the action.
 ---@field ihbc boolean Ignore hitbox check.
 ---@field name string The name of the action.
+---@field pingProfiles table[]? Ping-aware harvested timing profiles: { ping = number, when = number, samples = number }
 ---@field tp number Time position. Never accessible unless inside of a module or inside of real code. This is never serialized.
 local Action = {}
 Action.__index = Action
 
+-- Services.
+local stats = game:GetService("Stats")
+
+-- Constants.
+local PROFILE_MERGE_THRESHOLD_MS = 30
+
+---Get the current full RTT in milliseconds.
+---@return number?
+local function currentPingMs()
+	local network = stats:FindFirstChild("Network")
+	if not network then
+		return nil
+	end
+
+	local serverStatsItem = network:FindFirstChild("ServerStatsItem")
+	if not serverStatsItem then
+		return nil
+	end
+
+	local dataPing = serverStatsItem:FindFirstChild("Data Ping")
+	if not dataPing then
+		return nil
+	end
+
+	local ok, value = pcall(function()
+		return dataPing:GetValue()
+	end)
+	if not ok or type(value) ~= "number" then
+		return nil
+	end
+
+	return value
+end
+
+---Return the closest stored ping profile for the current RTT.
+---@return table?
+function Action:closestPingProfile()
+	if type(self.pingProfiles) ~= "table" or #self.pingProfiles == 0 then
+		return nil
+	end
+
+	local pingMs = currentPingMs()
+	if not pingMs then
+		return nil
+	end
+
+	local best, bestDelta = nil, math.huge
+	for _, profile in ipairs(self.pingProfiles) do
+		local delta = math.abs((profile.ping or 0) - pingMs)
+		if delta < bestDelta then
+			bestDelta = delta
+			best = profile
+		end
+	end
+
+	return best
+end
+
+---Add or merge a ping profile into the action.
+---@param pingMs number
+---@param whenMs number
+---@param samples number?
+---@return table
+function Action:addPingProfile(pingMs, whenMs, samples)
+	self.pingProfiles = self.pingProfiles or {}
+
+	local count = math.max(1, math.floor(samples or 1))
+	local bestIndex, bestDelta = nil, math.huge
+
+	for index, profile in ipairs(self.pingProfiles) do
+		local delta = math.abs((profile.ping or 0) - pingMs)
+		if delta < bestDelta then
+			bestDelta = delta
+			bestIndex = index
+		end
+	end
+
+	if bestIndex and bestDelta <= PROFILE_MERGE_THRESHOLD_MS then
+		local profile = self.pingProfiles[bestIndex]
+		local existingSamples = math.max(1, math.floor(profile.samples or 1))
+		local totalSamples = existingSamples + count
+
+		profile.ping = ((profile.ping or pingMs) * existingSamples + pingMs * count) / totalSamples
+		profile.when = ((profile.when or whenMs) * existingSamples + whenMs * count) / totalSamples
+		profile.samples = totalSamples
+	else
+		table.insert(self.pingProfiles, {
+			ping = pingMs,
+			when = whenMs,
+			samples = count,
+		})
+	end
+
+	table.sort(self.pingProfiles, function(a, b)
+		return (a.ping or 0) < (b.ping or 0)
+	end)
+
+	return self:closestPingProfile() or self.pingProfiles[#self.pingProfiles]
+end
+
 ---Getter for when in seconds.
 ---@return number
 function Action:when()
+	local profile = self:closestPingProfile()
+	if profile and type(profile.when) == "number" then
+		return profile.when / 1000
+	end
+
 	return PP_SCRAMBLE_NUM(self._when) / 1000
 end
 
@@ -7505,6 +7611,30 @@ function Action:load(values)
 
 	if typeof(values.ihbc) == "boolean" then
 		self.ihbc = values.ihbc
+	end
+
+	if typeof(values.pingProfiles) == "table" then
+		self.pingProfiles = {}
+
+		for _, profile in ipairs(values.pingProfiles) do
+			if typeof(profile) ~= "table" then
+				continue
+			end
+
+			if typeof(profile.ping) ~= "number" or typeof(profile.when) ~= "number" then
+				continue
+			end
+
+			table.insert(self.pingProfiles, {
+				ping = profile.ping,
+				when = profile.when,
+				samples = typeof(profile.samples) == "number" and profile.samples or 1,
+			})
+		end
+
+		table.sort(self.pingProfiles, function(a, b)
+			return (a.ping or 0) < (b.ping or 0)
+		end)
 	end
 end
 
@@ -7532,6 +7662,24 @@ function Action:equals(other)
 		return false
 	end
 
+	local selfCount = type(self.pingProfiles) == "table" and #self.pingProfiles or 0
+	local otherCount = type(other.pingProfiles) == "table" and #other.pingProfiles or 0
+	if selfCount ~= otherCount then
+		return false
+	end
+
+	for index = 1, selfCount do
+		local lhs = self.pingProfiles[index]
+		local rhs = other.pingProfiles[index]
+		if not lhs or not rhs then
+			return false
+		end
+
+		if lhs.ping ~= rhs.ping or lhs.when ~= rhs.when or lhs.samples ~= rhs.samples then
+			return false
+		end
+	end
+
 	return true
 end
 
@@ -7545,6 +7693,15 @@ function Action:clone()
 	clone.name = self.name
 	clone.hitbox = self.hitbox
 	clone.ihbc = self.ihbc
+	clone.pingProfiles = {}
+
+	for _, profile in ipairs(self.pingProfiles or {}) do
+		table.insert(clone.pingProfiles, {
+			ping = profile.ping,
+			when = profile.when,
+			samples = profile.samples,
+		})
+	end
 
 	return clone
 end
@@ -7562,6 +7719,7 @@ function Action:serialize()
 			Z = self.hitbox.Z,
 		},
 		ihbc = self.ihbc,
+			pingProfiles = self.pingProfiles,
 	}
 end
 
@@ -7576,6 +7734,7 @@ function Action.new(values)
 	self.name = ""
 	self.hitbox = Vector3.zero
 	self.ihbc = false
+	self.pingProfiles = {}
 	self.tp = 0
 
 	if values then
@@ -9207,7 +9366,7 @@ return LPH_NO_VIRTUALIZE(function()
 			return nil
 		end
 
-		local perfectWhens, parryWhens, failWhens, hitWhens, distances = {}, {}, {}, {}, {}
+		local perfectWhens, parryWhens, failWhens, hitWhens, distances, pings = {}, {}, {}, {}, {}, {}
 
 		for _, s in ipairs(b.pressSamples) do
 			if s.parried then
@@ -9222,12 +9381,20 @@ return LPH_NO_VIRTUALIZE(function()
 			if s.distance then
 				table.insert(distances, s.distance)
 			end
+
+			if s.ping then
+				table.insert(pings, s.ping)
+			end
 		end
 
 		for _, s in ipairs(b.hitSamples) do
 			table.insert(hitWhens, s.when)
 			if s.distance then
 				table.insert(distances, s.distance)
+			end
+
+			if s.ping then
+				table.insert(pings, s.ping)
 			end
 		end
 
@@ -9271,6 +9438,7 @@ return LPH_NO_VIRTUALIZE(function()
 				lo = percentile(hitWhens, 0.1),
 				hi = percentile(hitWhens, 0.9),
 			},
+			medianPingMs = (median(pings) or 0) * 1000,
 			minDistance = minDist,
 			maxDistance = maxDist,
 			-- Confidence scales with successful parry count.
@@ -9358,6 +9526,14 @@ return LPH_NO_VIRTUALIZE(function()
 		local AnimationTiming = require("Game/Timings/AnimationTiming")
 		local Action = require("Game/Timings/Action")
 
+		local function getParryAction(timing)
+			for _, action in next, timing.actions:get() do
+				if action._type == "Parry" then
+					return action
+				end
+			end
+		end
+
 		local solved = TimingHarvester.solve(aid)
 		if not solved then
 			return false, "No samples for aid: " .. tostring(aid)
@@ -9371,9 +9547,36 @@ return LPH_NO_VIRTUALIZE(function()
 			return false, "SaveManager not ready."
 		end
 
-		local existing = SaveManager.as:index(aid)
-		if existing then
-			return false, string.format("Timing already exists for '%s' (%s).", aid, existing.name)
+		local whenMs = math.round(solved.bestWhen * 1000)
+		local profilePingMs = math.max(0, math.round(solved.medianPingMs or (rttSeconds() * 1000)))
+		local existingConfig = SaveManager.as.config and SaveManager.as.config.timings[aid]
+
+		if existingConfig then
+			local action = getParryAction(existingConfig)
+			if not action then
+				action = Action.new()
+				action.name = string.format("Action_Harvested_n%d", solved.sampleCount)
+				action._type = "Parry"
+				action.hitbox = Vector3.new(20, 20, 30)
+				action.ihbc = false
+				existingConfig.actions:push(action)
+			end
+
+			action._when = PP_SCRAMBLE_RE_NUM(whenMs)
+			action:addPingProfile(profilePingMs, whenMs, solved.sampleCount)
+
+			existingConfig.imdd = math.max(0, math.min(existingConfig.imdd or solved.minDistance, solved.minDistance))
+			existingConfig.imxd = math.max(existingConfig.imxd or solved.maxDistance, solved.maxDistance)
+
+			Logger.notify(
+				"[Harvester] Updated '%s' with %.0fms @ %dms RTT (%d profiles).",
+				existingConfig.name,
+				solved.bestWhen * 1000,
+				profilePingMs,
+				#(action.pingProfiles or {})
+			)
+
+			return true, existingConfig.name
 		end
 
 		local name = timingName
@@ -9401,9 +9604,10 @@ return LPH_NO_VIRTUALIZE(function()
 		local action = Action.new()
 		action.name = string.format("Action_Harvested_n%d", solved.sampleCount)
 		action._type = "Parry"
-		action._when = PP_SCRAMBLE_RE_NUM(math.round(solved.bestWhen * 1000))
+		action._when = PP_SCRAMBLE_RE_NUM(whenMs)
 		action.hitbox = Vector3.new(20, 20, 30)
 		action.ihbc = false
+		action:addPingProfile(profilePingMs, whenMs, solved.sampleCount)
 		timing.actions:push(action)
 
 		local ok, err = pcall(SaveManager.as.config.push, SaveManager.as.config, timing)
@@ -9412,9 +9616,10 @@ return LPH_NO_VIRTUALIZE(function()
 		end
 
 		Logger.notify(
-			"[Harvester] Promoted '%s' when=%.0fms (n=%d perfect=%d parry=%d conf=%.2f).",
+			"[Harvester] Promoted '%s' when=%.0fms @ %dms RTT (n=%d perfect=%d parry=%d conf=%.2f).",
 			name,
 			solved.bestWhen * 1000,
+			profilePingMs,
 			solved.sampleCount,
 			solved.perfectCount,
 			solved.parryCount,
