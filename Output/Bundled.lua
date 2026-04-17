@@ -12983,6 +12983,9 @@ local AttributeListener = require("Features/Combat/AttributeListener")
 ---@module Features.Combat.ParryCooldownProbe
 local ParryCooldownProbe = require("Features/Combat/ParryCooldownProbe")
 
+---@module Game.Keybinding
+local Keybinding = require("Game/Keybinding")
+
 ---Deflect. This is called this way because it can either give parry or block frames depending on whether or not parry is on cooldown.
 function InputClient.deflect()
 	InputClient.block(true)
@@ -13019,6 +13022,19 @@ local function sendMovementKeyEvent(keyCode, isDown)
 	return ok
 end
 
+---@return Enum.KeyCode
+local function dashKeybind()
+	local configured = Keybinding.info["Dash"]
+		or Keybinding.info["Flashstep"]
+		or Keybinding.info["Dodge"]
+
+	if typeof(configured) == "EnumItem" and configured.EnumType == Enum.KeyCode then
+		return configured
+	end
+
+	return Enum.KeyCode.Q
+end
+
 ---@param key string?
 ---@return Vector3
 local function dashMoveVector(key)
@@ -13044,12 +13060,6 @@ end
 ---remote fire may not produce movement. If dash fallback silently no-ops, either turn
 ---off DashOnParryCooldown or add movement-key simulation around this call.
 function InputClient.dash()
-	local remotes = replicatedStorage:FindFirstChild("Remotes")
-	local requestModule = remotes and remotes:FindFirstChild("RequestModule")
-	if not requestModule then
-		return
-	end
-
 	local directionMap = {
 		W = "GroundForward",
 		A = "GroundLeft",
@@ -13086,12 +13096,13 @@ function InputClient.dash()
 		end
 	end
 
-	local direction = directionMap[key] or "GroundBack"
 	local simulatedKey = false
+	local simulatedDashKey = false
 	local localPlayer = players.LocalPlayer
 	local character = localPlayer and localPlayer.Character
 	local humanoid = character and character:FindFirstChildWhichIsA("Humanoid")
 	local moveVector = dashMoveVector(key)
+	local dashKey = dashKeybind()
 
 	if keyCode and not userInputService:IsKeyDown(keyCode) then
 		simulatedKey = sendMovementKeyEvent(keyCode, true)
@@ -13101,12 +13112,18 @@ function InputClient.dash()
 		humanoid:Move(moveVector, false)
 	end
 
-	ParryCooldownProbe.onDashAttempt("script")
-	requestModule:FireServer("Misc", "Dash", direction, { DashCooldown = 1.75 })
+	ParryCooldownProbe.onDashAttempt("keybind")
+	simulatedDashKey = sendMovementKeyEvent(dashKey, true)
 
 	if simulatedKey then
 		task.delay(DASH_INPUT_HOLD_S, function()
 			sendMovementKeyEvent(keyCode, false)
+		end)
+	end
+
+	if simulatedDashKey then
+		task.delay(DASH_INPUT_HOLD_S, function()
+			sendMovementKeyEvent(dashKey, false)
 		end)
 	end
 
