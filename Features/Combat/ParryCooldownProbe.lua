@@ -143,6 +143,45 @@ local function captureSnapshot()
 	return snapshot, playerGui
 end
 
+local function buildCurrentCandidates(snapshot, ability)
+	local results = {}
+
+	for path, state in pairs(snapshot or {}) do
+		local text = state.text or ""
+		local visible = state.visible == nil or state.visible == "true"
+		local score = keywordScore(path, text, text, ability)
+
+		if visible and state.class ~= "UIGradient" then
+			score = score + 2
+		end
+
+		if text ~= "" and text:match("%d") then
+			score = score + 3
+		end
+
+		if score > 0 then
+			table.insert(results, {
+				path = path,
+				className = state.class,
+				text = text,
+				visible = visible,
+				size = state.absSize or state.size or "?",
+				score = score,
+			})
+		end
+	end
+
+	table.sort(results, function(left, right)
+		if left.score == right.score then
+			return left.path < right.path
+		end
+
+		return left.score > right.score
+	end)
+
+	return results
+end
+
 local function keywordScore(path, firstValue, lastValue, ability)
 	local score = 0
 	local fields = {
@@ -322,6 +361,38 @@ end
 
 function ParryCooldownProbe.onAbilityAttempt(ability, source)
 	startProbe(ability or "unknown", source or "script")
+end
+
+function ParryCooldownProbe.dumpCurrentCandidates(ability)
+	local snapshot = select(1, captureSnapshot())
+	if not snapshot then
+		appendLog(string.format("[CooldownProbe] ability=%s no PlayerGui available.", tostring(ability or "unknown")))
+		return
+	end
+
+	local usedAbility = ability or "unknown"
+	local results = buildCurrentCandidates(snapshot, usedAbility)
+	appendLog(string.format("[CooldownProbe] current ability=%s visibleCandidates=%d", usedAbility, #results))
+
+	if #results == 0 then
+		appendLog(string.format("[CooldownProbe] no current %s HUD candidates matched keywords.", usedAbility))
+		return
+	end
+
+	for index = 1, math.min(MAX_RESULTS, #results) do
+		local result = results[index]
+		appendLog(
+			string.format(
+				"[CooldownProbe] current %s candidate %s [%s] visible=%s size=%s text=%s",
+				usedAbility,
+				result.path,
+				result.className,
+				tostring(result.visible),
+				trunc(result.size),
+				trunc(result.text)
+			)
+		)
+	end
 end
 
 function ParryCooldownProbe.onParryAttempt(source)

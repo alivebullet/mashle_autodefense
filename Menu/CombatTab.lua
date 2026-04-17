@@ -10,6 +10,12 @@ local Defense = require("Features/Combat/Defense")
 ---@module Features.Combat.Objects.Defender
 local Defender = require("Features/Combat/Objects/Defender")
 
+---@module Features.Combat.AttributeListener
+local AttributeListener = require("Features/Combat/AttributeListener")
+
+---@module Features.Combat.ParryCooldownProbe
+local ParryCooldownProbe = require("Features/Combat/ParryCooldownProbe")
+
 -- Initialize combat targeting section.
 ---@param tab table
 function CombatTab.initCombatTargetingSection(tab)
@@ -166,6 +172,19 @@ function CombatTab.initAutoDefenseSection(groupbox)
 				end
 
 				Defender.dbg("=== END DIAGNOSTIC ===")
+
+				local parryStatus = AttributeListener.parryStatus()
+				Defender.dbg(
+					"parryStatus reason=%s remaining=%dms hud=%s path=%s states=%s",
+					tostring(parryStatus.reason),
+					tonumber(parryStatus.remainingMs) or -1,
+					tostring(parryStatus.hudText),
+					tostring(parryStatus.hudPath),
+					table.concat(parryStatus.activeStates or {}, ",")
+				)
+
+				ParryCooldownProbe.dumpCurrentCandidates("parry")
+				ParryCooldownProbe.dumpCurrentCandidates("dash")
 			end
 		end,
 	})
