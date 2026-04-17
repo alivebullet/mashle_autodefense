@@ -249,6 +249,9 @@ return LPH_NO_VIRTUALIZE(function()
 		})
 
 		if #recentAnims > MAX_RECENT_ANIMS then
+			table.remove(recentAnims, 1)
+		end
+	end
 
 	---Return whether an animation id is banned.
 	---@param aid string
@@ -346,9 +349,6 @@ return LPH_NO_VIRTUALIZE(function()
 
 		if count == 0 then
 			Logger.warn("[Harvester][Banned] no banned animations.")
-		end
-	end
-			table.remove(recentAnims, 1)
 		end
 	end
 
