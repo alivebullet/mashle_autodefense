@@ -184,51 +184,53 @@ function CombatTab.initAutoDefenseSection(groupbox)
 		end,
 	})
 
-	autoDefenseDepBox
-		:AddButton({
-			Text = "Copy Debug Log",
-			Func = function()
-				local log = Defender.getDebugLog()
-				if #log == 0 then
-					return Logger.notify("Debug log is empty. Enable Defense Debug Logger and let it run.")
-				end
-				if setclipboard then
-					setclipboard(log)
-					Logger.notify("Copied %d lines to clipboard.", #Defender._debugLog)
-				else
-					Logger.notify("setclipboard not available on this executor.")
-				end
-			end,
-		})
-		:AddButton({
-			Text = "Clear Debug Log",
-			Func = function()
-				Defender.clearDebugLog()
-				Logger.notify("Debug log cleared.")
-			end,
-		})
-		:AddButton({
-			Text = "Copy Probe Log",
-			Func = function()
-				local log = ParryCooldownProbe.getDebugLog()
-				if #log == 0 then
-					return Logger.notify("Probe log is empty. Enable Parry Cooldown Probe and press parry once.")
-				end
-				if setclipboard then
-					setclipboard(log)
-					Logger.notify("Copied parry cooldown probe log.")
-				else
-					Logger.notify("setclipboard not available on this executor.")
-				end
-			end,
-		})
-		:AddButton({
-			Text = "Clear Probe Log",
-			Func = function()
-				ParryCooldownProbe.clearDebugLog()
-				Logger.notify("Probe log cleared.")
-			end,
-		})
+	autoDefenseDepBox:AddButton({
+		Text = "Copy Debug Log",
+		Func = function()
+			local log = Defender.getDebugLog()
+			if #log == 0 then
+				return Logger.notify("Debug log is empty. Enable Defense Debug Logger and let it run.")
+			end
+			if setclipboard then
+				setclipboard(log)
+				Logger.notify("Copied %d lines to clipboard.", #Defender._debugLog)
+			else
+				Logger.notify("setclipboard not available on this executor.")
+			end
+		end,
+	})
+
+	autoDefenseDepBox:AddButton({
+		Text = "Clear Debug Log",
+		Func = function()
+			Defender.clearDebugLog()
+			Logger.notify("Debug log cleared.")
+		end,
+	})
+
+	autoDefenseDepBox:AddButton({
+		Text = "Copy Probe Log",
+		Func = function()
+			local log = ParryCooldownProbe.getDebugLog()
+			if #log == 0 then
+				return Logger.notify("Probe log is empty. Enable Parry Cooldown Probe and press parry once.")
+			end
+			if setclipboard then
+				setclipboard(log)
+				Logger.notify("Copied parry cooldown probe log.")
+			else
+				Logger.notify("setclipboard not available on this executor.")
+			end
+		end,
+	})
+
+	autoDefenseDepBox:AddButton({
+		Text = "Clear Probe Log",
+		Func = function()
+			ParryCooldownProbe.clearDebugLog()
+			Logger.notify("Probe log cleared.")
+		end,
+	})
 
 	autoDefenseDepBox:AddToggle("EnableVisualizations", {
 		Text = "Enable Visualizations",
