@@ -9188,6 +9188,8 @@ return LPH_NO_VIRTUALIZE(function()
 	local MAX_PRESS_OFFSET_S = 1.5
 	local OUTCOME_WAIT_S = 0.5
 	local ATTRIB_MAX_DISTANCE = 60
+	local EARLY_SUCCESS_WINDOW_POSITION = 0.35
+	local HIT_FALLBACK_LEAD_S = 0.05
 
 	---Get the display label for an entity inside the harvester.
 	---@param entity Model?
@@ -9775,6 +9777,18 @@ return LPH_NO_VIRTUALIZE(function()
 		return s[idx]
 	end
 
+	---Pick a slightly early timing inside a solved success window.
+	---@param lo number?
+	---@param hi number?
+	---@return number?
+	local function earlyWindowTiming(lo, hi)
+		if lo == nil or hi == nil then
+			return nil
+		end
+
+		return lo + ((hi - lo) * EARLY_SUCCESS_WINDOW_POSITION)
+	end
+
 	---Solve a timing estimate from accumulated samples.
 	---@param aid string
 	---@return table?
@@ -9816,9 +9830,19 @@ return LPH_NO_VIRTUALIZE(function()
 			end
 		end
 
-		-- Prefer Perfect Parry median (tightest window) when we have any; else median
-		-- across all successful parry presses; else median across damage hits.
-		local bestWhen = median(perfectWhens) or median(parryWhens) or median(hitWhens)
+		local perfectLo = percentile(perfectWhens, 0.1)
+		local perfectHi = percentile(perfectWhens, 0.9)
+		local parryLo = percentile(parryWhens, 0.1)
+		local parryHi = percentile(parryWhens, 0.9)
+		local hitLo = percentile(hitWhens, 0.1)
+		local hitHi = percentile(hitWhens, 0.9)
+
+		-- Mashle parry becomes active slightly before impact, so midpoint timings trend late.
+		-- Bias harvested timings toward the early side of successful parry samples.
+		local bestWhen = earlyWindowTiming(perfectLo, perfectHi) or earlyWindowTiming(parryLo, parryHi)
+		if not bestWhen and #hitWhens > 0 then
+			bestWhen = math.max(0, (median(hitWhens) or 0) - HIT_FALLBACK_LEAD_S)
+		end
 		if not bestWhen then
 			return {
 				aid = aid,
@@ -9845,16 +9869,16 @@ return LPH_NO_VIRTUALIZE(function()
 			hitCount = #hitWhens,
 			bestWhen = bestWhen,
 			perfectRange = {
-				lo = percentile(perfectWhens, 0.1),
-				hi = percentile(perfectWhens, 0.9),
+				lo = perfectLo,
+				hi = perfectHi,
 			},
 			parryRange = {
-				lo = percentile(parryWhens, 0.1),
-				hi = percentile(parryWhens, 0.9),
+				lo = parryLo,
+				hi = parryHi,
 			},
 			hitRange = {
-				lo = percentile(hitWhens, 0.1),
-				hi = percentile(hitWhens, 0.9),
+				lo = hitLo,
+				hi = hitHi,
 			},
 			medianPingMs = (median(pings) or 0) * 1000,
 			minDistance = minDist,
@@ -11124,6 +11148,22 @@ local NOTIFY_DEDUP_WINDOW = 1.0
 -- Notification de-duplication.
 local lastNotifyTimes = {}
 
+---Return the configured lead time for parry actions.
+---@param action Action?
+---@return number
+local function parryLeadSeconds(action)
+	if not action or PP_SCRAMBLE_STR(action._type) ~= "Parry" then
+		return 0
+	end
+
+	local leadMs = Configuration.expectOptionValue("AutoParryLeadMs")
+	if type(leadMs) ~= "number" or leadMs <= 0 then
+		return 0
+	end
+
+	return leadMs / 1000
+end
+
 ---Log a miss to the UI library with distance check.
 ---@param type string
 ---@param key string
@@ -11626,26 +11666,34 @@ end)
 ---@param notify boolean
 Defender.handle = LPH_NO_VIRTUALIZE(function(self, timing, action, notify)
 	local dbg = Configuration.expectToggleValue("EnableDefenseDebug")
+	local actionType = PP_SCRAMBLE_STR(action._type)
+	local actionLeadMs = math.round(parryLeadSeconds(action) * 1000)
 
 	if not self:valid(timing, action) then
 		return
 	end
 
 	if dbg then
-		Defender.dbg("HANDLE executing type='%s' timing='%s' when=%dms",
-			PP_SCRAMBLE_STR(action._type), PP_SCRAMBLE_STR(timing.name),
-			math.round((action:when() or 0) * 1000))
+		if actionType == "Parry" and actionLeadMs > 0 then
+			Defender.dbg("HANDLE executing type='%s' timing='%s' when=%dms lead=%dms",
+				actionType, PP_SCRAMBLE_STR(timing.name),
+				math.round((action:when() or 0) * 1000), actionLeadMs)
+		else
+			Defender.dbg("HANDLE executing type='%s' timing='%s' when=%dms",
+				actionType, PP_SCRAMBLE_STR(timing.name),
+				math.round((action:when() or 0) * 1000))
+		end
 	end
 
 	if not notify then
-		self:notify(timing, "Action type '%s' is being executed.", PP_SCRAMBLE_STR(action._type))
+		self:notify(timing, "Action type '%s' is being executed.", actionType)
 	end
 
 	-- Dash instead of parry.
 	local dashReplacement = Random.new():NextNumber(1.0, 100.0)
 		<= (Configuration.expectOptionValue("DashInsteadOfParryRate") or 0.0)
 
-	if PP_SCRAMBLE_STR(action._type) ~= "Parry" then
+	if actionType ~= "Parry" then
 		dashReplacement = false
 	end
 
@@ -11657,20 +11705,20 @@ Defender.handle = LPH_NO_VIRTUALIZE(function(self, timing, action, notify)
 		dashReplacement = false
 	end
 
-	if PP_SCRAMBLE_STR(action._type) == "Start Block" then
+	if actionType == "Start Block" then
 		return InputClient.block(true)
 	end
 
-	if PP_SCRAMBLE_STR(action._type) == "End Block" then
+	if actionType == "End Block" then
 		return self:bend()
 	end
 
-	if PP_SCRAMBLE_STR(action._type) == "Dash" then
+	if actionType == "Dash" then
 		return InputClient.dash()
 	end
 
 	-- Apparat (last-resort evasive combo-breaker).
-	if PP_SCRAMBLE_STR(action._type) == "Apparat" then
+	if actionType == "Apparat" then
 		return InputClient.apparat()
 	end
 
@@ -11841,10 +11889,11 @@ Defender.action = LPH_NO_VIRTUALIZE(function(self, timing, action)
 
 	-- Get initial receive delay.
 	local rdelay = self.rdelay()
+	local actionLead = parryLeadSeconds(action)
 
 	-- Add action.
 	self:mark(Task.new(PP_SCRAMBLE_STR(action._type), function()
-		return action:when() - rdelay - self.sdelay()
+		return math.max(0, action:when() - actionLead - rdelay - self.sdelay())
 	end, timing.punishable, timing.after, self.handle, self, timing, action))
 
 	-- Log.
@@ -22397,6 +22446,16 @@ function CombatTab.initAutoDefenseSection(groupbox)
 		Text = "Dash On Parry Cooldown",
 		Default = false,
 		Tooltip = "If enabled, the auto defense will fallback to a dash if the parry action is not available.",
+	})
+
+	autoDefenseDepBox:AddSlider("AutoParryLeadMs", {
+		Text = "Auto Parry Lead",
+		Tooltip = "Runs parry actions slightly before the stored timing. Increase this if parries still feel late.",
+		Min = 0,
+		Max = 150,
+		Default = 45,
+		Suffix = "ms",
+		Rounding = 0,
 	})
 
 	autoDefenseDepBox:AddToggle("DeflectBlockFallback", {

@@ -48,6 +48,8 @@ return LPH_NO_VIRTUALIZE(function()
 	local MAX_PRESS_OFFSET_S = 1.5
 	local OUTCOME_WAIT_S = 0.5
 	local ATTRIB_MAX_DISTANCE = 60
+	local EARLY_SUCCESS_WINDOW_POSITION = 0.35
+	local HIT_FALLBACK_LEAD_S = 0.05
 
 	---Get the display label for an entity inside the harvester.
 	---@param entity Model?
@@ -635,6 +637,18 @@ return LPH_NO_VIRTUALIZE(function()
 		return s[idx]
 	end
 
+	---Pick a slightly early timing inside a solved success window.
+	---@param lo number?
+	---@param hi number?
+	---@return number?
+	local function earlyWindowTiming(lo, hi)
+		if lo == nil or hi == nil then
+			return nil
+		end
+
+		return lo + ((hi - lo) * EARLY_SUCCESS_WINDOW_POSITION)
+	end
+
 	---Solve a timing estimate from accumulated samples.
 	---@param aid string
 	---@return table?
@@ -676,9 +690,19 @@ return LPH_NO_VIRTUALIZE(function()
 			end
 		end
 
-		-- Prefer Perfect Parry median (tightest window) when we have any; else median
-		-- across all successful parry presses; else median across damage hits.
-		local bestWhen = median(perfectWhens) or median(parryWhens) or median(hitWhens)
+		local perfectLo = percentile(perfectWhens, 0.1)
+		local perfectHi = percentile(perfectWhens, 0.9)
+		local parryLo = percentile(parryWhens, 0.1)
+		local parryHi = percentile(parryWhens, 0.9)
+		local hitLo = percentile(hitWhens, 0.1)
+		local hitHi = percentile(hitWhens, 0.9)
+
+		-- Mashle parry becomes active slightly before impact, so midpoint timings trend late.
+		-- Bias harvested timings toward the early side of successful parry samples.
+		local bestWhen = earlyWindowTiming(perfectLo, perfectHi) or earlyWindowTiming(parryLo, parryHi)
+		if not bestWhen and #hitWhens > 0 then
+			bestWhen = math.max(0, (median(hitWhens) or 0) - HIT_FALLBACK_LEAD_S)
+		end
 		if not bestWhen then
 			return {
 				aid = aid,
@@ -705,16 +729,16 @@ return LPH_NO_VIRTUALIZE(function()
 			hitCount = #hitWhens,
 			bestWhen = bestWhen,
 			perfectRange = {
-				lo = percentile(perfectWhens, 0.1),
-				hi = percentile(perfectWhens, 0.9),
+				lo = perfectLo,
+				hi = perfectHi,
 			},
 			parryRange = {
-				lo = percentile(parryWhens, 0.1),
-				hi = percentile(parryWhens, 0.9),
+				lo = parryLo,
+				hi = parryHi,
 			},
 			hitRange = {
-				lo = percentile(hitWhens, 0.1),
-				hi = percentile(hitWhens, 0.9),
+				lo = hitLo,
+				hi = hitHi,
 			},
 			medianPingMs = (median(pings) or 0) * 1000,
 			minDistance = minDist,

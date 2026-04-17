@@ -206,6 +206,16 @@ function CombatTab.initAutoDefenseSection(groupbox)
 		Tooltip = "If enabled, the auto defense will fallback to a dash if the parry action is not available.",
 	})
 
+	autoDefenseDepBox:AddSlider("AutoParryLeadMs", {
+		Text = "Auto Parry Lead",
+		Tooltip = "Runs parry actions slightly before the stored timing. Increase this if parries still feel late.",
+		Min = 0,
+		Max = 150,
+		Default = 45,
+		Suffix = "ms",
+		Rounding = 0,
+	})
+
 	autoDefenseDepBox:AddToggle("DeflectBlockFallback", {
 		Text = "Deflect Block Fallback",
 		Default = false,

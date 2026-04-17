@@ -67,6 +67,22 @@ local NOTIFY_DEDUP_WINDOW = 1.0
 -- Notification de-duplication.
 local lastNotifyTimes = {}
 
+---Return the configured lead time for parry actions.
+---@param action Action?
+---@return number
+local function parryLeadSeconds(action)
+	if not action or PP_SCRAMBLE_STR(action._type) ~= "Parry" then
+		return 0
+	end
+
+	local leadMs = Configuration.expectOptionValue("AutoParryLeadMs")
+	if type(leadMs) ~= "number" or leadMs <= 0 then
+		return 0
+	end
+
+	return leadMs / 1000
+end
+
 ---Log a miss to the UI library with distance check.
 ---@param type string
 ---@param key string
@@ -569,26 +585,34 @@ end)
 ---@param notify boolean
 Defender.handle = LPH_NO_VIRTUALIZE(function(self, timing, action, notify)
 	local dbg = Configuration.expectToggleValue("EnableDefenseDebug")
+	local actionType = PP_SCRAMBLE_STR(action._type)
+	local actionLeadMs = math.round(parryLeadSeconds(action) * 1000)
 
 	if not self:valid(timing, action) then
 		return
 	end
 
 	if dbg then
-		Defender.dbg("HANDLE executing type='%s' timing='%s' when=%dms",
-			PP_SCRAMBLE_STR(action._type), PP_SCRAMBLE_STR(timing.name),
-			math.round((action:when() or 0) * 1000))
+		if actionType == "Parry" and actionLeadMs > 0 then
+			Defender.dbg("HANDLE executing type='%s' timing='%s' when=%dms lead=%dms",
+				actionType, PP_SCRAMBLE_STR(timing.name),
+				math.round((action:when() or 0) * 1000), actionLeadMs)
+		else
+			Defender.dbg("HANDLE executing type='%s' timing='%s' when=%dms",
+				actionType, PP_SCRAMBLE_STR(timing.name),
+				math.round((action:when() or 0) * 1000))
+		end
 	end
 
 	if not notify then
-		self:notify(timing, "Action type '%s' is being executed.", PP_SCRAMBLE_STR(action._type))
+		self:notify(timing, "Action type '%s' is being executed.", actionType)
 	end
 
 	-- Dash instead of parry.
 	local dashReplacement = Random.new():NextNumber(1.0, 100.0)
 		<= (Configuration.expectOptionValue("DashInsteadOfParryRate") or 0.0)
 
-	if PP_SCRAMBLE_STR(action._type) ~= "Parry" then
+	if actionType ~= "Parry" then
 		dashReplacement = false
 	end
 
@@ -600,20 +624,20 @@ Defender.handle = LPH_NO_VIRTUALIZE(function(self, timing, action, notify)
 		dashReplacement = false
 	end
 
-	if PP_SCRAMBLE_STR(action._type) == "Start Block" then
+	if actionType == "Start Block" then
 		return InputClient.block(true)
 	end
 
-	if PP_SCRAMBLE_STR(action._type) == "End Block" then
+	if actionType == "End Block" then
 		return self:bend()
 	end
 
-	if PP_SCRAMBLE_STR(action._type) == "Dash" then
+	if actionType == "Dash" then
 		return InputClient.dash()
 	end
 
 	-- Apparat (last-resort evasive combo-breaker).
-	if PP_SCRAMBLE_STR(action._type) == "Apparat" then
+	if actionType == "Apparat" then
 		return InputClient.apparat()
 	end
 
@@ -784,10 +808,11 @@ Defender.action = LPH_NO_VIRTUALIZE(function(self, timing, action)
 
 	-- Get initial receive delay.
 	local rdelay = self.rdelay()
+	local actionLead = parryLeadSeconds(action)
 
 	-- Add action.
 	self:mark(Task.new(PP_SCRAMBLE_STR(action._type), function()
-		return action:when() - rdelay - self.sdelay()
+		return math.max(0, action:when() - actionLead - rdelay - self.sdelay())
 	end, timing.punishable, timing.after, self.handle, self, timing, action))
 
 	-- Log.
