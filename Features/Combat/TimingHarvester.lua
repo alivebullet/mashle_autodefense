@@ -120,12 +120,13 @@ return LPH_NO_VIRTUALIZE(function()
 	---Get or create a sample bucket for an animation id.
 	---@param aid string
 	---@param entityName string
+	---@param priority string?
 	---@return table
-	local function bucket(aid, entityName)
+	local function bucket(aid, entityName, priority)
 		local b = samples[aid]
 		if not b then
 			b = {
-				meta = { aid = aid, entityName = entityName, firstSeenAt = tick() },
+				meta = { aid = aid, entityName = entityName, firstSeenAt = tick(), priority = priority or "?" },
 				pressSamples = {},
 				hitSamples = {},
 			}
@@ -158,6 +159,16 @@ return LPH_NO_VIRTUALIZE(function()
 			return
 		end
 
+		-- Skip non-combat animations (Idle, Movement, Core).
+		if track and track.Priority then
+			local pri = track.Priority
+			if pri == Enum.AnimationPriority.Core
+				or pri == Enum.AnimationPriority.Idle
+				or pri == Enum.AnimationPriority.Movement then
+				return
+			end
+		end
+
 		table.insert(recentAnims, {
 			aid = aid,
 			entity = entity,
@@ -166,6 +177,7 @@ return LPH_NO_VIRTUALIZE(function()
 			speed = (track and track.Speed) or 1.0,
 			length = (track and track.Length) or 0,
 			distance = distanceTo(entity),
+			priority = (track and track.Priority) and track.Priority.Name or "?",
 		})
 
 		if #recentAnims > MAX_RECENT_ANIMS then
@@ -198,7 +210,7 @@ return LPH_NO_VIRTUALIZE(function()
 			local clientOffset = t - candidate.t0
 			local serverWhen = toServerAnimTime(clientOffset, candidate.speed, ping)
 
-			local b = bucket(candidate.aid, candidate.entityName)
+			local b = bucket(candidate.aid, candidate.entityName, candidate.priority)
 			table.insert(b.pressSamples, {
 				when = serverWhen,
 				clientOffset = clientOffset,
@@ -236,7 +248,7 @@ return LPH_NO_VIRTUALIZE(function()
 		local clientOffset = effectiveT - candidate.t0
 		local serverWhen = toServerAnimTime(clientOffset, candidate.speed, ping)
 
-		local b = bucket(candidate.aid, candidate.entityName)
+		local b = bucket(candidate.aid, candidate.entityName, candidate.priority)
 		table.insert(b.pressSamples, {
 			when = serverWhen,
 			clientOffset = clientOffset,
@@ -271,7 +283,7 @@ return LPH_NO_VIRTUALIZE(function()
 		local clientOffset = effectiveT - candidate.t0
 		local serverWhen = toServerAnimTime(clientOffset, candidate.speed, ping)
 
-		local b = bucket(candidate.aid, candidate.entityName)
+		local b = bucket(candidate.aid, candidate.entityName, candidate.priority)
 		table.insert(b.hitSamples, {
 			when = serverWhen,
 			clientOffset = clientOffset,
@@ -408,6 +420,12 @@ return LPH_NO_VIRTUALIZE(function()
 		}
 	end
 
+	---Return the raw samples table for external UI.
+	---@return table
+	function TimingHarvester.getSamples()
+		return samples
+	end
+
 	---List harvested animations (one label per aid) for a dropdown.
 	---@return string[]
 	function TimingHarvester.list()
@@ -417,7 +435,8 @@ return LPH_NO_VIRTUALIZE(function()
 			local label
 			if solved and solved.bestWhen then
 				label = string.format(
-					"%s (%s) n=%d/P%d/p%d/f%d when=%dms",
+					"[%s] %s (%s) n=%d/P%d/p%d/f%d when=%dms",
+					b.meta.priority or "?",
 					b.meta.entityName,
 					aid,
 					solved.sampleCount,
@@ -427,7 +446,7 @@ return LPH_NO_VIRTUALIZE(function()
 					math.round((solved.bestWhen or 0) * 1000)
 				)
 			else
-				label = string.format("%s (%s) n=%d no-solve", b.meta.entityName, aid, (solved and solved.sampleCount) or 0)
+				label = string.format("[%s] %s (%s) n=%d no-solve", b.meta.priority or "?", b.meta.entityName, aid, (solved and solved.sampleCount) or 0)
 			end
 			table.insert(out, label)
 		end

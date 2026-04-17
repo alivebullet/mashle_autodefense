@@ -31,9 +31,6 @@ local AnimationLogger = require("Features/Game/AnimationLogger")
 ---@module Features.Combat.TimingHarvester
 local TimingHarvester = require("Features/Combat/TimingHarvester")
 
----@module Features.Game.AnimationVisualizer
-local AnimationVisualizer = require("Features/Game/AnimationVisualizer")
-
 ---@module GUI.Library
 local Library = require("GUI/Library")
 
@@ -361,119 +358,19 @@ function BuilderTab.initHarvesterSection(groupbox)
 	groupbox:AddToggle("EnableTimingHarvester", {
 		Text = "Enable Timing Harvester",
 		Default = false,
-		Tooltip = "Records every parry press + outcome + damage hit. Solves Perfect Parry / Parry windows per animation.",
+		Tooltip = "Records combat animations + damage hits to solve parry timings. Only tracks Action+ priority.",
 	})
 
-	local statusLabel = groupbox:AddLabel("Samples: 0 aids / 0 total")
-
-	local harvestedList = groupbox:AddDropdown("HarvestedAnimationList", {
-		Text = "Harvested Animations",
-		Values = {},
-		AllowNull = true,
-		Callback = function(value)
-			if not value then
-				return
-			end
-
-			local aid = TimingHarvester.aidFromLabel(value)
-			if aid then
-				AnimationVisualizer.loadId(aid)
-			end
-		end,
-	})
-
-	local harvestedNameInput = groupbox:AddInput("HarvestedTimingName", {
-		Text = "Timing Name (optional)",
-		Tooltip = "Leave empty to auto-generate '<EntityName>_<id>_Harvested'.",
-	})
-
-	local harvestedAutoSaveInput = groupbox:AddInput("HarvestedAutoSaveConfigName", {
+	groupbox:AddInput("HarvestedAutoSaveConfigName", {
 		Text = "Auto Save Config Name",
 		Tooltip = "Optional: if set, promoted timings are immediately written to this config file.",
 		Placeholder = "example: mashle_autogen",
 	})
 
-	local function autoSaveHarvested()
-		local configName = harvestedAutoSaveInput and harvestedAutoSaveInput.Value
-		if not configName or #configName <= 0 then
-			return
-		end
-
-		local code = SaveManager.write(configName)
-		if code == 0 then
-			Library:Notify(string.format("Auto-saved harvested timings to '%s'.", configName))
-		else
-			Library:Notify(string.format("Failed to auto-save harvested timings to '%s'.", configName))
-		end
-	end
-
-	local function refreshStatus()
-		local aidCount, total = TimingHarvester.counts()
-		statusLabel:SetText(string.format("Samples: %d aids / %d total", aidCount, total))
-	end
-
-	groupbox:AddButton("Refresh Harvested List", function()
-		harvestedList:SetValues(TimingHarvester.list())
-		harvestedList:SetValue(nil)
-		harvestedList:Display()
-		refreshStatus()
+	groupbox:AddButton("Open Harvester Panel", function()
+		local HarvesterPanel = require("GUI/HarvesterPanel")
+		HarvesterPanel.toggle()
 	end)
-
-	groupbox:AddButton("Dump Samples To Logger", function()
-		TimingHarvester.dump()
-		refreshStatus()
-	end)
-
-	groupbox:AddButton("Promote Selected To Config", function()
-		local selected = harvestedList.Value
-		if not selected then
-			return Library:Notify("Select a harvested animation first.")
-		end
-
-		local aid = TimingHarvester.aidFromLabel(selected)
-		if not aid then
-			return Library:Notify("Could not parse animation ID from selection.")
-		end
-
-		local name = harvestedNameInput and harvestedNameInput.Value or nil
-		local ok, result = TimingHarvester.promoteToConfig(aid, name)
-
-		if ok then
-			Library:Notify(string.format("Created timing '%s'.", result))
-			autoSaveHarvested()
-			BuilderTab.refresh()
-		else
-			Library:Notify(result)
-		end
-	end)
-
-	groupbox
-		:AddButton({
-			Text = "Promote All Harvested",
-			DoubleClick = true,
-			Func = function()
-				local s, f = TimingHarvester.promoteAll()
-				Library:Notify(string.format("Promoted %d timings (%d skipped/failed).", s, f))
-
-				if s > 0 then
-					autoSaveHarvested()
-				end
-
-				BuilderTab.refresh()
-			end,
-		})
-		:AddButton({
-			Text = "Clear Harvested Samples",
-			DoubleClick = true,
-			Func = function()
-				TimingHarvester.clear()
-				harvestedList:SetValues({})
-				harvestedList:SetValue(nil)
-				harvestedList:Display()
-				refreshStatus()
-				Library:Notify("Cleared all harvested samples.")
-			end,
-		})
 end
 
 ---Initialize Module Manager section.
