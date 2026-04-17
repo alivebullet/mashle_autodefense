@@ -18743,6 +18743,9 @@ local AnimationLogger = require("Features/Game/AnimationLogger")
 ---@module Features.Combat.TimingHarvester
 local TimingHarvester = require("Features/Combat/TimingHarvester")
 
+---@module GUI.HarvesterPanel
+local HarvesterPanel = require("GUI/HarvesterPanel")
+
 ---@module GUI.Library
 local Library = require("GUI/Library")
 
@@ -19080,7 +19083,6 @@ function BuilderTab.initHarvesterSection(groupbox)
 	})
 
 	groupbox:AddButton("Open Harvester Panel", function()
-		local HarvesterPanel = require("GUI/HarvesterPanel")
 		HarvesterPanel.toggle()
 	end)
 end
@@ -19461,16 +19463,6 @@ return LPH_NO_VIRTUALIZE(function()
 			return
 		end
 		isInitialized = true
-
-		-- Parent to CoreGui manually since we're loaded after CoreGuiManager.set() already ran.
-		if not screenGui.Parent then
-			local ok, coreGui = pcall(function()
-				return game:GetService("CoreGui")
-			end)
-			if ok and coreGui then
-				screenGui.Parent = coreGui
-			end
-		end
 
 		Library:MakeDraggable(outer)
 

@@ -31,6 +31,9 @@ local AnimationLogger = require("Features/Game/AnimationLogger")
 ---@module Features.Combat.TimingHarvester
 local TimingHarvester = require("Features/Combat/TimingHarvester")
 
+---@module GUI.HarvesterPanel
+local HarvesterPanel = require("GUI/HarvesterPanel")
+
 ---@module GUI.Library
 local Library = require("GUI/Library")
 
@@ -368,7 +371,6 @@ function BuilderTab.initHarvesterSection(groupbox)
 	})
 
 	groupbox:AddButton("Open Harvester Panel", function()
-		local HarvesterPanel = require("GUI/HarvesterPanel")
 		HarvesterPanel.toggle()
 	end)
 end
