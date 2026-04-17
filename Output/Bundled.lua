@@ -9083,6 +9083,24 @@ return LPH_NO_VIRTUALIZE(function()
 		return value
 	end
 
+	---Distance from local player to an entity (nil if unknown).
+	---@param entity Model?
+	---@return number?
+	local function distanceTo(entity)
+		local localChar = players.LocalPlayer and players.LocalPlayer.Character
+		if not localChar or not localChar.PrimaryPart or not entity then
+			return nil
+		end
+
+		local target = entity:IsA("Model") and entity.PrimaryPart
+			or entity:FindFirstChildWhichIsA("BasePart", true)
+		if not target then
+			return nil
+		end
+
+		return (localChar.PrimaryPart.Position - target.Position).Magnitude
+	end
+
 	---Check whether the harvester should consider an entity at its current distance.
 	---@param entity Model?
 	---@return boolean, number?
@@ -9182,24 +9200,6 @@ return LPH_NO_VIRTUALIZE(function()
 			return dataPing:GetValue()
 		end)
 		return (ok and type(v) == "number") and (v * 0.001) or 0
-	end
-
-	---Distance from local player to an entity (nil if unknown).
-	---@param entity Model?
-	---@return number?
-	local function distanceTo(entity)
-		local localChar = players.LocalPlayer and players.LocalPlayer.Character
-		if not localChar or not localChar.PrimaryPart or not entity then
-			return nil
-		end
-
-		local target = entity:IsA("Model") and entity.PrimaryPart
-			or entity:FindFirstChildWhichIsA("BasePart", true)
-		if not target then
-			return nil
-		end
-
-		return (localChar.PrimaryPart.Position - target.Position).Magnitude
 	end
 
 	---Is the harvester enabled via config toggle?
