@@ -174,13 +174,24 @@ function CombatTab.initAutoDefenseSection(groupbox)
 				Defender.dbg("=== END DIAGNOSTIC ===")
 
 				local parryStatus = AttributeListener.parryStatus()
+				local dashStatus = AttributeListener.dashStatus()
+				local activeCooldowns = AttributeListener.activeCooldowns()
 				Defender.dbg(
-					"parryStatus reason=%s remaining=%dms hud=%s path=%s states=%s",
+					"parryStatus reason=%s remaining=%dms cooldown=%s path=%s states=%s activeCooldowns=%s",
 					tostring(parryStatus.reason),
 					tonumber(parryStatus.remainingMs) or -1,
-					tostring(parryStatus.hudText),
-					tostring(parryStatus.hudPath),
-					table.concat(parryStatus.activeStates or {}, ",")
+					tostring(parryStatus.cooldownName or parryStatus.hudText),
+					tostring(parryStatus.cooldownPath or parryStatus.hudPath),
+					table.concat(parryStatus.activeStates or {}, ","),
+					#activeCooldowns > 0 and table.concat(activeCooldowns, ",") or "-"
+				)
+				Defender.dbg(
+					"dashStatus reason=%s remaining=%dms cooldown=%s path=%s states=%s",
+					tostring(dashStatus.reason),
+					tonumber(dashStatus.remainingMs) or -1,
+					tostring(dashStatus.cooldownName),
+					tostring(dashStatus.cooldownPath),
+					table.concat(dashStatus.activeStates or {}, ",")
 				)
 
 				ParryCooldownProbe.dumpCurrentCandidates("parry")

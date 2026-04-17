@@ -651,11 +651,11 @@ Defender.handle = LPH_NO_VIRTUALIZE(function(self, timing, action, notify)
 			if dbg then
 				local parryStatus = AttributeListener.parryStatus()
 				Defender.dbg(
-					"PARRY FIRED reason=%s remaining=%dms hud=%s path=%s for '%s'",
+					"PARRY FIRED reason=%s remaining=%dms cooldown=%s path=%s for '%s'",
 					parryStatus.reason,
 					parryStatus.remainingMs or 0,
-					parryStatus.hudText or "-",
-					parryStatus.hudPath or "-",
+					parryStatus.cooldownName or parryStatus.hudText or "-",
+					parryStatus.cooldownPath or parryStatus.hudPath or "-",
 					PP_SCRAMBLE_STR(timing.name)
 				)
 			end
@@ -671,14 +671,14 @@ Defender.handle = LPH_NO_VIRTUALIZE(function(self, timing, action, notify)
 		local parryStatus = AttributeListener.parryStatus()
 		local states = #parryStatus.activeStates > 0 and table.concat(parryStatus.activeStates, ",") or "-"
 		Defender.dbg(
-			"PARRY BLOCKED cparry()=false reason=%s remaining=%dms sinceAttempt=%s sinceSuccess=%s states=%s hud=%s path=%s for '%s'",
+			"PARRY BLOCKED cparry()=false reason=%s remaining=%dms sinceAttempt=%s sinceSuccess=%s states=%s cooldown=%s path=%s for '%s'",
 			parryStatus.reason,
 			parryStatus.remainingMs or 0,
 			parryStatus.sinceAttemptMs and tostring(parryStatus.sinceAttemptMs) or "-",
 			parryStatus.sinceSuccessMs and tostring(parryStatus.sinceSuccessMs) or "-",
 			states,
-			parryStatus.hudText or "-",
-			parryStatus.hudPath or "-",
+			parryStatus.cooldownName or parryStatus.hudText or "-",
+			parryStatus.cooldownPath or parryStatus.hudPath or "-",
 			PP_SCRAMBLE_STR(timing.name)
 		)
 	end
@@ -706,6 +706,17 @@ Defender.handle = LPH_NO_VIRTUALIZE(function(self, timing, action, notify)
 	end
 
 	if not AttributeListener.cdash() then
+		if dbg then
+			local dashStatus = AttributeListener.dashStatus()
+			Defender.dbg(
+				"DASH BLOCKED cdash()=false reason=%s remaining=%dms cooldown=%s path=%s for '%s'",
+				dashStatus.reason,
+				dashStatus.remainingMs or 0,
+				dashStatus.cooldownName or "-",
+				dashStatus.cooldownPath or "-",
+				PP_SCRAMBLE_STR(timing.name)
+			)
+		end
 		return blockFallback() or self:notify(timing, "Action fallback 'Dodge' blocked because we are unable to dash.")
 	end
 

@@ -53,6 +53,65 @@ local function parryCooldownSeconds()
 	return cooldownMs / 1000
 end
 
+---@return Folder?
+local function cooldownsFolder()
+	local localPlayer = players.LocalPlayer
+	local folder = localPlayer and localPlayer:FindFirstChild("Cooldowns")
+
+	if folder and folder:IsA("Folder") then
+		return folder
+	end
+
+	return nil
+end
+
+---@param cooldownName string
+---@return Instance?, string?, boolean
+local function cooldownEntry(cooldownName)
+	local folder = cooldownsFolder()
+	if not folder then
+		return nil, nil, false
+	end
+
+	for _, child in ipairs(folder:GetChildren()) do
+		if string.lower(child.Name) == string.lower(cooldownName) then
+			return child, child:GetFullName(), true
+		end
+	end
+
+	return nil, string.format("%s.%s", folder:GetFullName(), cooldownName), true
+end
+
+---@param instance Instance?
+---@return number?
+local function cooldownRemainingMs(instance)
+	if not instance then
+		return nil
+	end
+
+	local raw = nil
+	if instance:IsA("NumberValue") or instance:IsA("IntValue") then
+		raw = instance.Value
+	elseif instance:IsA("StringValue") then
+		raw = tonumber(instance.Value)
+	else
+		raw = instance:GetAttribute("Remaining")
+			or instance:GetAttribute("Cooldown")
+			or instance:GetAttribute("TimeLeft")
+			or instance:GetAttribute("Value")
+	end
+
+	if type(raw) ~= "number" then
+		return nil
+	end
+
+	if raw > 100 then
+		return math.max(0, math.round(raw))
+	end
+
+	return math.max(0, math.round(raw * 1000))
+end
+
 ---@param instance Instance?
 ---@return boolean
 local function guiTreeVisible(instance)
@@ -320,10 +379,57 @@ function AttributeListener.activeStates()
 	return active
 end
 
+---Current active entries inside the player's Cooldowns folder.
+---@return string[]
+function AttributeListener.activeCooldowns()
+	local folder = cooldownsFolder()
+	local active = {}
+
+	if not folder then
+		return active
+	end
+
+	for _, child in ipairs(folder:GetChildren()) do
+		table.insert(active, child.Name)
+	end
+
+	table.sort(active)
+	return active
+end
+
+---Milliseconds remaining on the synthetic dash cooldown.
+---@return number
+function AttributeListener.dashRemainingMs()
+	if not AttributeListener.lastDash then
+		return 0
+	end
+
+	return math.max(0, math.round((DASH_COOLDOWN_S - (tick() - AttributeListener.lastDash)) * 1000))
+end
+
 ---Current local parry availability snapshot.
 ---@return table
 function AttributeListener.parryStatus()
 	local now = tick()
+	local parryCooldown, cooldownPath, hasCooldownFolder = cooldownEntry("Parry")
+
+	if hasCooldownFolder then
+		return {
+			canParry = parryCooldown == nil,
+			reason = parryCooldown and "cooldowns-folder" or "cooldowns-ready",
+			remainingMs = cooldownRemainingMs(parryCooldown) or 0,
+			sinceAttemptMs = AttributeListener.lastParryAttempt and math.round((now - AttributeListener.lastParryAttempt) * 1000)
+				or nil,
+			sinceSuccessMs = AttributeListener.lastParrySuccess and math.round((now - AttributeListener.lastParrySuccess) * 1000)
+				or nil,
+			activeStates = AttributeListener.activeStates(),
+			cooldownName = parryCooldown and parryCooldown.Name or "Parry",
+			cooldownPath = cooldownPath,
+			hudPath = nil,
+			hudText = nil,
+		}
+	end
+
 	local hudRemainingMs, hudText, hudPath, hudSeenEver = hudParryCooldown()
 
 	if hudSeenEver then
@@ -336,6 +442,8 @@ function AttributeListener.parryStatus()
 			sinceSuccessMs = AttributeListener.lastParrySuccess and math.round((now - AttributeListener.lastParrySuccess) * 1000)
 				or nil,
 			activeStates = AttributeListener.activeStates(),
+			cooldownName = hudText,
+			cooldownPath = hudPath,
 			hudPath = hudPath,
 			hudText = hudText,
 		}
@@ -354,8 +462,39 @@ function AttributeListener.parryStatus()
 		sinceSuccessMs = AttributeListener.lastParrySuccess and math.round((now - AttributeListener.lastParrySuccess) * 1000)
 			or nil,
 		activeStates = activeStates,
+		cooldownName = "SyntheticParryCooldown",
+		cooldownPath = nil,
 		hudPath = hudPath,
 		hudText = hudText,
+	}
+end
+
+---Current local dash availability snapshot.
+---@return table
+function AttributeListener.dashStatus()
+	local dashCooldown, cooldownPath, hasCooldownFolder = cooldownEntry("Dash")
+
+	if hasCooldownFolder then
+		return {
+			canDash = dashCooldown == nil,
+			reason = dashCooldown and "cooldowns-folder" or "cooldowns-ready",
+			remainingMs = cooldownRemainingMs(dashCooldown) or 0,
+			activeStates = AttributeListener.activeStates(),
+			cooldownName = dashCooldown and dashCooldown.Name or "Dash",
+			cooldownPath = cooldownPath,
+		}
+	end
+
+	local remainingMs = AttributeListener.dashRemainingMs()
+	local reason = remainingMs > 0 and "synthetic-cooldown" or "ready"
+
+	return {
+		canDash = remainingMs <= 0,
+		reason = reason,
+		remainingMs = remainingMs,
+		activeStates = AttributeListener.activeStates(),
+		cooldownName = "SyntheticDashCooldown",
+		cooldownPath = nil,
 	}
 end
 
@@ -380,7 +519,7 @@ function AttributeListener.cdash()
 		return false
 	end
 
-	return not AttributeListener.lastDash or tick() - AttributeListener.lastDash >= DASH_COOLDOWN_S
+	return AttributeListener.dashStatus().canDash
 end
 
 ---Initialize AttributeListener module.

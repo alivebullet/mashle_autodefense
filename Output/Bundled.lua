@@ -8986,6 +8986,65 @@ local function parryCooldownSeconds()
 	return cooldownMs / 1000
 end
 
+---@return Folder?
+local function cooldownsFolder()
+	local localPlayer = players.LocalPlayer
+	local folder = localPlayer and localPlayer:FindFirstChild("Cooldowns")
+
+	if folder and folder:IsA("Folder") then
+		return folder
+	end
+
+	return nil
+end
+
+---@param cooldownName string
+---@return Instance?, string?, boolean
+local function cooldownEntry(cooldownName)
+	local folder = cooldownsFolder()
+	if not folder then
+		return nil, nil, false
+	end
+
+	for _, child in ipairs(folder:GetChildren()) do
+		if string.lower(child.Name) == string.lower(cooldownName) then
+			return child, child:GetFullName(), true
+		end
+	end
+
+	return nil, string.format("%s.%s", folder:GetFullName(), cooldownName), true
+end
+
+---@param instance Instance?
+---@return number?
+local function cooldownRemainingMs(instance)
+	if not instance then
+		return nil
+	end
+
+	local raw = nil
+	if instance:IsA("NumberValue") or instance:IsA("IntValue") then
+		raw = instance.Value
+	elseif instance:IsA("StringValue") then
+		raw = tonumber(instance.Value)
+	else
+		raw = instance:GetAttribute("Remaining")
+			or instance:GetAttribute("Cooldown")
+			or instance:GetAttribute("TimeLeft")
+			or instance:GetAttribute("Value")
+	end
+
+	if type(raw) ~= "number" then
+		return nil
+	end
+
+	if raw > 100 then
+		return math.max(0, math.round(raw))
+	end
+
+	return math.max(0, math.round(raw * 1000))
+end
+
 ---@param instance Instance?
 ---@return boolean
 local function guiTreeVisible(instance)
@@ -9253,10 +9312,57 @@ function AttributeListener.activeStates()
 	return active
 end
 
+---Current active entries inside the player's Cooldowns folder.
+---@return string[]
+function AttributeListener.activeCooldowns()
+	local folder = cooldownsFolder()
+	local active = {}
+
+	if not folder then
+		return active
+	end
+
+	for _, child in ipairs(folder:GetChildren()) do
+		table.insert(active, child.Name)
+	end
+
+	table.sort(active)
+	return active
+end
+
+---Milliseconds remaining on the synthetic dash cooldown.
+---@return number
+function AttributeListener.dashRemainingMs()
+	if not AttributeListener.lastDash then
+		return 0
+	end
+
+	return math.max(0, math.round((DASH_COOLDOWN_S - (tick() - AttributeListener.lastDash)) * 1000))
+end
+
 ---Current local parry availability snapshot.
 ---@return table
 function AttributeListener.parryStatus()
 	local now = tick()
+	local parryCooldown, cooldownPath, hasCooldownFolder = cooldownEntry("Parry")
+
+	if hasCooldownFolder then
+		return {
+			canParry = parryCooldown == nil,
+			reason = parryCooldown and "cooldowns-folder" or "cooldowns-ready",
+			remainingMs = cooldownRemainingMs(parryCooldown) or 0,
+			sinceAttemptMs = AttributeListener.lastParryAttempt and math.round((now - AttributeListener.lastParryAttempt) * 1000)
+				or nil,
+			sinceSuccessMs = AttributeListener.lastParrySuccess and math.round((now - AttributeListener.lastParrySuccess) * 1000)
+				or nil,
+			activeStates = AttributeListener.activeStates(),
+			cooldownName = parryCooldown and parryCooldown.Name or "Parry",
+			cooldownPath = cooldownPath,
+			hudPath = nil,
+			hudText = nil,
+		}
+	end
+
 	local hudRemainingMs, hudText, hudPath, hudSeenEver = hudParryCooldown()
 
 	if hudSeenEver then
@@ -9269,6 +9375,8 @@ function AttributeListener.parryStatus()
 			sinceSuccessMs = AttributeListener.lastParrySuccess and math.round((now - AttributeListener.lastParrySuccess) * 1000)
 				or nil,
 			activeStates = AttributeListener.activeStates(),
+			cooldownName = hudText,
+			cooldownPath = hudPath,
 			hudPath = hudPath,
 			hudText = hudText,
 		}
@@ -9287,8 +9395,39 @@ function AttributeListener.parryStatus()
 		sinceSuccessMs = AttributeListener.lastParrySuccess and math.round((now - AttributeListener.lastParrySuccess) * 1000)
 			or nil,
 		activeStates = activeStates,
+		cooldownName = "SyntheticParryCooldown",
+		cooldownPath = nil,
 		hudPath = hudPath,
 		hudText = hudText,
+	}
+end
+
+---Current local dash availability snapshot.
+---@return table
+function AttributeListener.dashStatus()
+	local dashCooldown, cooldownPath, hasCooldownFolder = cooldownEntry("Dash")
+
+	if hasCooldownFolder then
+		return {
+			canDash = dashCooldown == nil,
+			reason = dashCooldown and "cooldowns-folder" or "cooldowns-ready",
+			remainingMs = cooldownRemainingMs(dashCooldown) or 0,
+			activeStates = AttributeListener.activeStates(),
+			cooldownName = dashCooldown and dashCooldown.Name or "Dash",
+			cooldownPath = cooldownPath,
+		}
+	end
+
+	local remainingMs = AttributeListener.dashRemainingMs()
+	local reason = remainingMs > 0 and "synthetic-cooldown" or "ready"
+
+	return {
+		canDash = remainingMs <= 0,
+		reason = reason,
+		remainingMs = remainingMs,
+		activeStates = AttributeListener.activeStates(),
+		cooldownName = "SyntheticDashCooldown",
+		cooldownPath = nil,
 	}
 end
 
@@ -9313,7 +9452,7 @@ function AttributeListener.cdash()
 		return false
 	end
 
-	return not AttributeListener.lastDash or tick() - AttributeListener.lastDash >= DASH_COOLDOWN_S
+	return AttributeListener.dashStatus().canDash
 end
 
 ---Initialize AttributeListener module.
@@ -12386,11 +12525,11 @@ Defender.handle = LPH_NO_VIRTUALIZE(function(self, timing, action, notify)
 			if dbg then
 				local parryStatus = AttributeListener.parryStatus()
 				Defender.dbg(
-					"PARRY FIRED reason=%s remaining=%dms hud=%s path=%s for '%s'",
+					"PARRY FIRED reason=%s remaining=%dms cooldown=%s path=%s for '%s'",
 					parryStatus.reason,
 					parryStatus.remainingMs or 0,
-					parryStatus.hudText or "-",
-					parryStatus.hudPath or "-",
+					parryStatus.cooldownName or parryStatus.hudText or "-",
+					parryStatus.cooldownPath or parryStatus.hudPath or "-",
 					PP_SCRAMBLE_STR(timing.name)
 				)
 			end
@@ -12406,14 +12545,14 @@ Defender.handle = LPH_NO_VIRTUALIZE(function(self, timing, action, notify)
 		local parryStatus = AttributeListener.parryStatus()
 		local states = #parryStatus.activeStates > 0 and table.concat(parryStatus.activeStates, ",") or "-"
 		Defender.dbg(
-			"PARRY BLOCKED cparry()=false reason=%s remaining=%dms sinceAttempt=%s sinceSuccess=%s states=%s hud=%s path=%s for '%s'",
+			"PARRY BLOCKED cparry()=false reason=%s remaining=%dms sinceAttempt=%s sinceSuccess=%s states=%s cooldown=%s path=%s for '%s'",
 			parryStatus.reason,
 			parryStatus.remainingMs or 0,
 			parryStatus.sinceAttemptMs and tostring(parryStatus.sinceAttemptMs) or "-",
 			parryStatus.sinceSuccessMs and tostring(parryStatus.sinceSuccessMs) or "-",
 			states,
-			parryStatus.hudText or "-",
-			parryStatus.hudPath or "-",
+			parryStatus.cooldownName or parryStatus.hudText or "-",
+			parryStatus.cooldownPath or parryStatus.hudPath or "-",
 			PP_SCRAMBLE_STR(timing.name)
 		)
 	end
@@ -12441,6 +12580,17 @@ Defender.handle = LPH_NO_VIRTUALIZE(function(self, timing, action, notify)
 	end
 
 	if not AttributeListener.cdash() then
+		if dbg then
+			local dashStatus = AttributeListener.dashStatus()
+			Defender.dbg(
+				"DASH BLOCKED cdash()=false reason=%s remaining=%dms cooldown=%s path=%s for '%s'",
+				dashStatus.reason,
+				dashStatus.remainingMs or 0,
+				dashStatus.cooldownName or "-",
+				dashStatus.cooldownPath or "-",
+				PP_SCRAMBLE_STR(timing.name)
+			)
+		end
 		return blockFallback() or self:notify(timing, "Action fallback 'Dodge' blocked because we are unable to dash.")
 	end
 
@@ -23218,13 +23368,24 @@ function CombatTab.initAutoDefenseSection(groupbox)
 				Defender.dbg("=== END DIAGNOSTIC ===")
 
 				local parryStatus = AttributeListener.parryStatus()
+				local dashStatus = AttributeListener.dashStatus()
+				local activeCooldowns = AttributeListener.activeCooldowns()
 				Defender.dbg(
-					"parryStatus reason=%s remaining=%dms hud=%s path=%s states=%s",
+					"parryStatus reason=%s remaining=%dms cooldown=%s path=%s states=%s activeCooldowns=%s",
 					tostring(parryStatus.reason),
 					tonumber(parryStatus.remainingMs) or -1,
-					tostring(parryStatus.hudText),
-					tostring(parryStatus.hudPath),
-					table.concat(parryStatus.activeStates or {}, ",")
+					tostring(parryStatus.cooldownName or parryStatus.hudText),
+					tostring(parryStatus.cooldownPath or parryStatus.hudPath),
+					table.concat(parryStatus.activeStates or {}, ","),
+					#activeCooldowns > 0 and table.concat(activeCooldowns, ",") or "-"
+				)
+				Defender.dbg(
+					"dashStatus reason=%s remaining=%dms cooldown=%s path=%s states=%s",
+					tostring(dashStatus.reason),
+					tonumber(dashStatus.remainingMs) or -1,
+					tostring(dashStatus.cooldownName),
+					tostring(dashStatus.cooldownPath),
+					table.concat(dashStatus.activeStates or {}, ",")
 				)
 
 				ParryCooldownProbe.dumpCurrentCandidates("parry")
