@@ -9382,6 +9382,13 @@ local KEYWORDS = {
 	"slot",
 	"hotbar",
 	"guard",
+	"dash",
+	"evade",
+	"evasive",
+}
+local ABILITY_KEYWORDS = {
+	parry = { "parry", "block", "guard" },
+	dash = { "dash", "evade", "evasive", "movement" },
 }
 local PROPERTY_WEIGHTS = {
 	visible = 8,
@@ -9484,20 +9491,35 @@ local function captureSnapshot()
 	return snapshot, playerGui
 end
 
-local function keywordScore(path)
+local function keywordScore(path, firstValue, lastValue, ability)
 	local score = 0
-	local lowerPath = string.lower(path)
+	local fields = {
+		string.lower(path or ""),
+		string.lower(tostring(firstValue or "")),
+		string.lower(tostring(lastValue or "")),
+	}
 
-	for _, keyword in ipairs(KEYWORDS) do
-		if string.find(lowerPath, keyword, 1, true) then
-			score = score + 10
+	local function addKeywordScore(keywords, weight)
+		for _, keyword in ipairs(keywords) do
+			for _, field in ipairs(fields) do
+				if string.find(field, keyword, 1, true) then
+					score = score + weight
+					break
+				end
+			end
 		end
+	end
+
+	addKeywordScore(KEYWORDS, 4)
+
+	if ABILITY_KEYWORDS[ability] then
+		addKeywordScore(ABILITY_KEYWORDS[ability], 10)
 	end
 
 	return score
 end
 
-local function addChange(changes, path, className, property, firstValue, lastValue)
+local function addChange(changes, path, className, property, firstValue, lastValue, ability)
 	local key = string.format("%s::%s", path, property)
 	local entry = changes[key]
 
@@ -9509,7 +9531,7 @@ local function addChange(changes, path, className, property, firstValue, lastVal
 			firstValue = tostring(firstValue),
 			lastValue = tostring(lastValue),
 			count = 0,
-			score = keywordScore(path) + (PROPERTY_WEIGHTS[property] or 1),
+			score = keywordScore(path, firstValue, lastValue, ability) + (PROPERTY_WEIGHTS[property] or 1),
 		}
 		changes[key] = entry
 	end
@@ -9519,16 +9541,16 @@ local function addChange(changes, path, className, property, firstValue, lastVal
 	entry.score = entry.score + 1
 end
 
-local function collectChanges(previous, current, changes)
+local function collectChanges(previous, current, changes, ability)
 	for path, currentState in pairs(current) do
 		local previousState = previous[path]
 
 		if not previousState then
-			addChange(changes, path, currentState.class, "created", "<missing>", currentState.class)
+			addChange(changes, path, currentState.class, "created", "<missing>", currentState.class, ability)
 		else
 			for property, value in pairs(currentState) do
 				if property ~= "class" and previousState[property] ~= value then
-					addChange(changes, path, currentState.class, property, previousState[property], value)
+					addChange(changes, path, currentState.class, property, previousState[property], value, ability)
 				end
 			end
 		end
@@ -9536,7 +9558,7 @@ local function collectChanges(previous, current, changes)
 
 	for path, previousState in pairs(previous) do
 		if not current[path] then
-			addChange(changes, path, previousState.class, "removed", previousState.class, "<missing>")
+			addChange(changes, path, previousState.class, "removed", previousState.class, "<missing>", ability)
 		end
 	end
 	end
@@ -9562,8 +9584,9 @@ local function reportActiveProbe(active)
 
 	appendLog(
 		string.format(
-			"[ParryProbe #%d] source=%s sampled=%.1fs playerGuiChanges=%d",
+			"[CooldownProbe #%d] ability=%s source=%s sampled=%.1fs playerGuiChanges=%d",
 			active.token,
+			active.ability,
 			active.source,
 			os.clock() - active.startedAt,
 			#results
@@ -9571,11 +9594,11 @@ local function reportActiveProbe(active)
 	)
 
 	for _, event in ipairs(active.events) do
-		appendLog(string.format("[ParryProbe #%d] event=%s at +%dms", active.token, event.label, event.ms))
+		appendLog(string.format("[CooldownProbe #%d] event=%s at +%dms", active.token, event.label, event.ms))
 	end
 
 	if #results == 0 then
-		appendLog(string.format("[ParryProbe #%d] no PlayerGui candidates changed.", active.token))
+		appendLog(string.format("[CooldownProbe #%d] no PlayerGui candidates changed.", active.token))
 		return
 	end
 
@@ -9583,7 +9606,7 @@ local function reportActiveProbe(active)
 		local result = results[index]
 		appendLog(
 			string.format(
-				"[ParryProbe #%d] candidate %s [%s] %s: %s -> %s (x%d)",
+				"[CooldownProbe #%d] candidate %s [%s] %s: %s -> %s (x%d)",
 				active.token,
 				result.path,
 				result.className,
@@ -9596,8 +9619,9 @@ local function reportActiveProbe(active)
 	end
 end
 
-local function startProbe(source)
-	if not Configuration.expectToggleValue("EnableParryCooldownProbe") then
+local function startProbe(ability, source)
+	if Configuration.expectToggleValue("EnableDefenseDebug") ~= true
+		and Configuration.expectToggleValue("EnableParryCooldownProbe") ~= true then
 		return
 	end
 
@@ -9612,6 +9636,7 @@ local function startProbe(source)
 
 	local active = {
 		token = ParryCooldownProbe.token,
+		ability = ability or "unknown",
 		source = source,
 		startedAt = os.clock(),
 		endTime = os.clock() + PROBE_DURATION_S,
@@ -9636,15 +9661,23 @@ local function startProbe(source)
 
 			local current = select(1, captureSnapshot())
 			if current then
-				collectChanges(active.previous, current, active.changes)
+				collectChanges(active.previous, current, active.changes, active.ability)
 				active.previous = current
 			end
 		end
 	end)
 end
 
+function ParryCooldownProbe.onAbilityAttempt(ability, source)
+	startProbe(ability or "unknown", source or "script")
+end
+
 function ParryCooldownProbe.onParryAttempt(source)
-	startProbe(source or "script")
+	ParryCooldownProbe.onAbilityAttempt("parry", source)
+end
+
+function ParryCooldownProbe.onDashAttempt(source)
+	ParryCooldownProbe.onAbilityAttempt("dash", source)
 end
 
 function ParryCooldownProbe.onParryResult(label)
@@ -9674,7 +9707,7 @@ function ParryCooldownProbe.init()
 		local blockParryKey = Keybinding.info["Block / Parry"] or Enum.KeyCode.F
 
 		if input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode == blockParryKey then
-			startProbe("manual-key")
+			startProbe("parry", "manual-key")
 		end
 	end))
 end
@@ -12280,7 +12313,15 @@ Defender.handle = LPH_NO_VIRTUALIZE(function(self, timing, action, notify)
 	if AttributeListener.cparry() then
 		if timing.nfdb or not AttributeListener.cdash() or not dashReplacement then
 			if dbg then
-				Defender.dbg("PARRY FIRED for '%s'", PP_SCRAMBLE_STR(timing.name))
+				local parryStatus = AttributeListener.parryStatus()
+				Defender.dbg(
+					"PARRY FIRED reason=%s remaining=%dms hud=%s path=%s for '%s'",
+					parryStatus.reason,
+					parryStatus.remainingMs or 0,
+					parryStatus.hudText or "-",
+					parryStatus.hudPath or "-",
+					PP_SCRAMBLE_STR(timing.name)
+				)
 			end
 			return InputClient.parry()
 		end
@@ -12563,12 +12604,33 @@ end
 ---Get the full debug log as a single string.
 ---@return string
 function Defender.getDebugLog()
-	return table.concat(Defender._debugLog, "\n")
+	local sections = {}
+	local mainLog = table.concat(Defender._debugLog, "\n")
+
+	if #mainLog > 0 then
+		table.insert(sections, mainLog)
+	end
+
+	local ok, probe = pcall(require, "Features/Combat/ParryCooldownProbe")
+	if ok and probe and probe.getDebugLog then
+		local probeLog = probe.getDebugLog()
+		if type(probeLog) == "string" and #probeLog > 0 then
+			table.insert(sections, "=== COOLDOWN HUD PROBE ===")
+			table.insert(sections, probeLog)
+		end
+	end
+
+	return table.concat(sections, "\n")
 end
 
 ---Clear the debug log.
 function Defender.clearDebugLog()
 	Defender._debugLog = {}
+
+	local ok, probe = pcall(require, "Features/Combat/ParryCooldownProbe")
+	if ok and probe and probe.clearDebugLog then
+		probe.clearDebugLog()
+	end
 end
 
 -- Return Defender module.
@@ -12688,6 +12750,9 @@ local TimingHarvester = require("Features/Combat/TimingHarvester")
 ---@module Features.Combat.AttributeListener
 local AttributeListener = require("Features/Combat/AttributeListener")
 
+---@module Features.Combat.ParryCooldownProbe
+local ParryCooldownProbe = require("Features/Combat/ParryCooldownProbe")
+
 ---Deflect. This is called this way because it can either give parry or block frames depending on whether or not parry is on cooldown.
 function InputClient.deflect()
 	InputClient.block(true)
@@ -12746,6 +12811,7 @@ function InputClient.dash()
 
 	local direction = directionMap[key] or "GroundBack"
 
+	ParryCooldownProbe.onDashAttempt("script")
 	requestModule:FireServer("Misc", "Dash", direction, { DashCooldown = 1.75 })
 end
 

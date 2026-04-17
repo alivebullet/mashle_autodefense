@@ -649,7 +649,15 @@ Defender.handle = LPH_NO_VIRTUALIZE(function(self, timing, action, notify)
 	if AttributeListener.cparry() then
 		if timing.nfdb or not AttributeListener.cdash() or not dashReplacement then
 			if dbg then
-				Defender.dbg("PARRY FIRED for '%s'", PP_SCRAMBLE_STR(timing.name))
+				local parryStatus = AttributeListener.parryStatus()
+				Defender.dbg(
+					"PARRY FIRED reason=%s remaining=%dms hud=%s path=%s for '%s'",
+					parryStatus.reason,
+					parryStatus.remainingMs or 0,
+					parryStatus.hudText or "-",
+					parryStatus.hudPath or "-",
+					PP_SCRAMBLE_STR(timing.name)
+				)
 			end
 			return InputClient.parry()
 		end
@@ -932,12 +940,33 @@ end
 ---Get the full debug log as a single string.
 ---@return string
 function Defender.getDebugLog()
-	return table.concat(Defender._debugLog, "\n")
+	local sections = {}
+	local mainLog = table.concat(Defender._debugLog, "\n")
+
+	if #mainLog > 0 then
+		table.insert(sections, mainLog)
+	end
+
+	local ok, probe = pcall(require, "Features/Combat/ParryCooldownProbe")
+	if ok and probe and probe.getDebugLog then
+		local probeLog = probe.getDebugLog()
+		if type(probeLog) == "string" and #probeLog > 0 then
+			table.insert(sections, "=== COOLDOWN HUD PROBE ===")
+			table.insert(sections, probeLog)
+		end
+	end
+
+	return table.concat(sections, "\n")
 end
 
 ---Clear the debug log.
 function Defender.clearDebugLog()
 	Defender._debugLog = {}
+
+	local ok, probe = pcall(require, "Features/Combat/ParryCooldownProbe")
+	if ok and probe and probe.clearDebugLog then
+		probe.clearDebugLog()
+	end
 end
 
 -- Return Defender module.

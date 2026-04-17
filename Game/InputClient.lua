@@ -15,6 +15,9 @@ local TimingHarvester = require("Features/Combat/TimingHarvester")
 ---@module Features.Combat.AttributeListener
 local AttributeListener = require("Features/Combat/AttributeListener")
 
+---@module Features.Combat.ParryCooldownProbe
+local ParryCooldownProbe = require("Features/Combat/ParryCooldownProbe")
+
 ---Deflect. This is called this way because it can either give parry or block frames depending on whether or not parry is on cooldown.
 function InputClient.deflect()
 	InputClient.block(true)
@@ -73,6 +76,7 @@ function InputClient.dash()
 
 	local direction = directionMap[key] or "GroundBack"
 
+	ParryCooldownProbe.onDashAttempt("script")
 	requestModule:FireServer("Misc", "Dash", direction, { DashCooldown = 1.75 })
 end
 
