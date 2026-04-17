@@ -22795,9 +22795,6 @@ local Logger = require("Utility/Logger")
 ---@module Features.Combat.Defense
 local Defense = require("Features/Combat/Defense")
 
----@module Features.Combat.ParryCooldownProbe
-local ParryCooldownProbe = require("Features/Combat/ParryCooldownProbe")
-
 ---@module Features.Combat.Objects.Defender
 local Defender = require("Features/Combat/Objects/Defender")
 
@@ -22961,17 +22958,6 @@ function CombatTab.initAutoDefenseSection(groupbox)
 		end,
 	})
 
-	autoDefenseDepBox:AddToggle("EnableParryCooldownProbe", {
-		Text = "Parry Cooldown Probe",
-		Default = false,
-		Tooltip = "After each parry key press, samples PlayerGui for a short window and logs HUD elements that changed. Use this to identify the game's real parry cooldown widget.",
-		Callback = function(value)
-			if value then
-				ParryCooldownProbe.clearDebugLog()
-			end
-		end,
-	})
-
 	autoDefenseDepBox:AddButton({
 		Text = "Copy Debug Log",
 		Func = function()
@@ -22993,30 +22979,6 @@ function CombatTab.initAutoDefenseSection(groupbox)
 		Func = function()
 			Defender.clearDebugLog()
 			Logger.notify("Debug log cleared.")
-		end,
-	})
-
-	autoDefenseDepBox:AddButton({
-		Text = "Copy Probe Log",
-		Func = function()
-			local log = ParryCooldownProbe.getDebugLog()
-			if #log == 0 then
-				return Logger.notify("Probe log is empty. Enable Parry Cooldown Probe and press parry once.")
-			end
-			if setclipboard then
-				setclipboard(log)
-				Logger.notify("Copied parry cooldown probe log.")
-			else
-				Logger.notify("setclipboard not available on this executor.")
-			end
-		end,
-	})
-
-	autoDefenseDepBox:AddButton({
-		Text = "Clear Probe Log",
-		Func = function()
-			ParryCooldownProbe.clearDebugLog()
-			Logger.notify("Probe log cleared.")
 		end,
 	})
 
