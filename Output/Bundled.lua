@@ -5575,6 +5575,27 @@ local function loadInternalTimings(animationContainer, partContainer, soundConta
 	return false
 end
 
+---Sync persisted harvester state into the current timing config metadata.
+local function syncHarvesterStateToConfig()
+	local ok, TimingHarvester = pcall(require, "Features/Combat/TimingHarvester")
+	if not ok or type(TimingHarvester) ~= "table" or type(TimingHarvester.serializePersistentState) ~= "function" then
+		return
+	end
+
+	config:metadata().harvester = TimingHarvester.serializePersistentState()
+end
+
+---Restore persisted harvester state from the current timing config metadata.
+local function syncHarvesterStateFromConfig()
+	local ok, TimingHarvester = pcall(require, "Features/Combat/TimingHarvester")
+	if not ok or type(TimingHarvester) ~= "table" or type(TimingHarvester.loadPersistentState) ~= "function" then
+		return
+	end
+
+	local metadata = config:metadata()
+	TimingHarvester.loadPersistentState(metadata and metadata.harvester or nil)
+end
+
 ---Get save files list.
 ---@return table
 function SaveManager.list()
@@ -5640,6 +5661,7 @@ function SaveManager.merge(name, type)
 	end
 
 	config:merge(TimingSave.new(result), type)
+	syncHarvesterStateFromConfig()
 
 	Logger.notify("Config file %s has merged with the loaded one.", name)
 end
@@ -5707,6 +5729,8 @@ function SaveManager.write(name)
 	if not name or #name <= 0 then
 		return -1, Logger.longNotify("Config name cannot be empty.")
 	end
+
+	syncHarvesterStateToConfig()
 
 	local success, result = pcall(Serializer.marshal, config:serialize())
 
@@ -5806,6 +5830,8 @@ function SaveManager.load(name)
 		return Logger.warn("Timing manager ran into the error '%s' while attempting to load config %s.", result, name)
 	end
 
+	syncHarvesterStateFromConfig()
+
 	Logger.notify(
 		"Config file %s has loaded with %i timings in %.2f seconds.",
 		name,
@@ -5886,6 +5912,7 @@ function SaveManager.init()
 		end
 
 		SaveManager.lct = os.clock()
+		syncHarvesterStateToConfig()
 
 		if config:equals(llc) then
 			return
@@ -8275,12 +8302,80 @@ local SoundTiming = require("Game/Timings/SoundTiming")
 
 ---@class TimingSave
 ---@field _data TimingContainer[]
+---@field _meta table
 local TimingSave = {}
 TimingSave.__index = TimingSave
 
 ---Timing save version constant.
 ---@note: Increment me when the data structure changes and we need to add backwards compatibility.
-local TIMING_SAVE_VERSION = 1
+local TIMING_SAVE_VERSION = 2
+
+---Clone a serializable value.
+---@param value any
+---@return any
+local function cloneValue(value)
+	if typeof(value) ~= "table" then
+		return value
+	end
+
+	local out = {}
+	for key, inner in next, value do
+		out[key] = cloneValue(inner)
+	end
+
+	return out
+end
+
+---Merge two metadata tables recursively.
+---@param base table?
+---@param incoming table?
+---@return table
+local function mergeMetadata(base, incoming)
+	local merged = cloneValue(base or {})
+	if typeof(incoming) ~= "table" then
+		return merged
+	end
+
+	for key, value in next, incoming do
+		if typeof(value) == "table" and typeof(merged[key]) == "table" then
+			merged[key] = mergeMetadata(merged[key], value)
+		else
+			merged[key] = cloneValue(value)
+		end
+	end
+
+	return merged
+end
+
+---Compare serializable values.
+---@param first any
+---@param second any
+---@return boolean
+local function valuesEqual(first, second)
+	if typeof(first) ~= typeof(second) then
+		return false
+	end
+
+	if typeof(first) ~= "table" then
+		return first == second
+	end
+
+	local seen = {}
+	for key, value in next, first do
+		if not valuesEqual(value, second[key]) then
+			return false
+		end
+		seen[key] = true
+	end
+
+	for key in next, second do
+		if not seen[key] then
+			return false
+		end
+	end
+
+	return true
+end
 
 ---@alias MergeType
 ---| '1' # Only add new timings
@@ -8292,11 +8387,19 @@ function TimingSave:get()
 	return self._data
 end
 
+---Get save metadata.
+---@return table
+function TimingSave:metadata()
+	return self._meta
+end
+
 ---Clear timing containers.
 function TimingSave:clear()
 	for _, container in next, self._data do
 		container:clear()
 	end
+
+	self._meta = {}
 end
 
 ---Merge with another TimingSave object.
@@ -8311,12 +8414,15 @@ function TimingSave:merge(save, type)
 
 		container:merge(other, type)
 	end
+
+	self._meta = mergeMetadata(self._meta, save._meta)
 end
 
 ---Load from partial values.
 ---@param values table
 function TimingSave:load(values)
 	local data = self._data
+	self._meta = typeof(values.meta) == "table" and cloneValue(values.meta) or {}
 
 	if typeof(values.animation) == "table" then
 		data.animation:load(values.animation)
@@ -8340,6 +8446,8 @@ function TimingSave:clone()
 		save._data[idx] = container:clone()
 	end
 
+	save._meta = cloneValue(self._meta)
+
 	return save
 end
 
@@ -8362,7 +8470,7 @@ function TimingSave:equals(other)
 		end
 	end
 
-	return true
+	return valuesEqual(self._meta, other._meta)
 end
 
 ---Get timing save count.
@@ -8387,6 +8495,7 @@ function TimingSave:serialize()
 		animation = data.animation:serialize(),
 		part = data.part:serialize(),
 		sound = data.sound:serialize(),
+		meta = cloneValue(self._meta),
 	}
 end
 
@@ -8401,6 +8510,7 @@ function TimingSave.new(values)
 		part = TimingContainer.new(PartTiming),
 		sound = TimingContainer.new(SoundTiming),
 	}
+	self._meta = {}
 
 	if values then
 		self:load(values)
@@ -9066,6 +9176,24 @@ return LPH_NO_VIRTUALIZE(function()
 	local OUTCOME_WAIT_S = 0.5
 	local ATTRIB_MAX_DISTANCE = 60
 
+	---Create a serializable banned entry.
+	---@param aid string
+	---@param info table?
+	---@return table
+	local function persistentBannedEntry(aid, info)
+		local meta = type(info) == "table" and type(info.meta) == "table" and info.meta or {}
+		return {
+			meta = {
+				aid = aid,
+				entityName = type(meta.entityName) == "string" and meta.entityName or "?",
+				priority = type(meta.priority) == "string" and meta.priority or "?",
+				bannedAt = type(meta.bannedAt) == "number" and meta.bannedAt or 0,
+			},
+			sampleCount = type(info) == "table" and type(info.sampleCount) == "number" and info.sampleCount or 0,
+			seenCount = type(info) == "table" and type(info.seenCount) == "number" and info.seenCount or 0,
+		}
+	end
+
 	---Get the current harvester minimum distance.
 	---@return number
 	local function harvesterMinDistance()
@@ -9420,6 +9548,46 @@ return LPH_NO_VIRTUALIZE(function()
 		if count == 0 then
 			Logger.warn("[Harvester][Banned] no banned animations.")
 		end
+	end
+
+	---Serialize persistent harvester state for config saves.
+	---@return table
+	function TimingHarvester.serializePersistentState()
+		local out = {}
+		for aid, info in next, bannedAnims do
+			out[aid] = persistentBannedEntry(aid, info)
+		end
+
+		return {
+			bannedAnims = out,
+		}
+	end
+
+	---Load persistent harvester state from config saves.
+	---@param state table?
+	function TimingHarvester.loadPersistentState(state)
+		local loaded = {}
+		if type(state) == "table" and type(state.bannedAnims) == "table" then
+			for aid, info in next, state.bannedAnims do
+				if type(aid) == "string" and aid ~= "" then
+					loaded[aid] = persistentBannedEntry(aid, info)
+				end
+			end
+		end
+
+		bannedAnims = loaded
+
+		for aid in next, loaded do
+			observedAnims[aid] = nil
+		end
+
+		local filtered = {}
+		for _, entry in ipairs(recentAnims) do
+			if not loaded[entry.aid] then
+				table.insert(filtered, entry)
+			end
+		end
+		recentAnims = filtered
 	end
 
 	---Record a parry press. Opens a pending-outcome window.

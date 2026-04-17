@@ -12,12 +12,80 @@ local SoundTiming = require("Game/Timings/SoundTiming")
 
 ---@class TimingSave
 ---@field _data TimingContainer[]
+---@field _meta table
 local TimingSave = {}
 TimingSave.__index = TimingSave
 
 ---Timing save version constant.
 ---@note: Increment me when the data structure changes and we need to add backwards compatibility.
-local TIMING_SAVE_VERSION = 1
+local TIMING_SAVE_VERSION = 2
+
+---Clone a serializable value.
+---@param value any
+---@return any
+local function cloneValue(value)
+	if typeof(value) ~= "table" then
+		return value
+	end
+
+	local out = {}
+	for key, inner in next, value do
+		out[key] = cloneValue(inner)
+	end
+
+	return out
+end
+
+---Merge two metadata tables recursively.
+---@param base table?
+---@param incoming table?
+---@return table
+local function mergeMetadata(base, incoming)
+	local merged = cloneValue(base or {})
+	if typeof(incoming) ~= "table" then
+		return merged
+	end
+
+	for key, value in next, incoming do
+		if typeof(value) == "table" and typeof(merged[key]) == "table" then
+			merged[key] = mergeMetadata(merged[key], value)
+		else
+			merged[key] = cloneValue(value)
+		end
+	end
+
+	return merged
+end
+
+---Compare serializable values.
+---@param first any
+---@param second any
+---@return boolean
+local function valuesEqual(first, second)
+	if typeof(first) ~= typeof(second) then
+		return false
+	end
+
+	if typeof(first) ~= "table" then
+		return first == second
+	end
+
+	local seen = {}
+	for key, value in next, first do
+		if not valuesEqual(value, second[key]) then
+			return false
+		end
+		seen[key] = true
+	end
+
+	for key in next, second do
+		if not seen[key] then
+			return false
+		end
+	end
+
+	return true
+end
 
 ---@alias MergeType
 ---| '1' # Only add new timings
@@ -29,11 +97,19 @@ function TimingSave:get()
 	return self._data
 end
 
+---Get save metadata.
+---@return table
+function TimingSave:metadata()
+	return self._meta
+end
+
 ---Clear timing containers.
 function TimingSave:clear()
 	for _, container in next, self._data do
 		container:clear()
 	end
+
+	self._meta = {}
 end
 
 ---Merge with another TimingSave object.
@@ -48,12 +124,15 @@ function TimingSave:merge(save, type)
 
 		container:merge(other, type)
 	end
+
+	self._meta = mergeMetadata(self._meta, save._meta)
 end
 
 ---Load from partial values.
 ---@param values table
 function TimingSave:load(values)
 	local data = self._data
+	self._meta = typeof(values.meta) == "table" and cloneValue(values.meta) or {}
 
 	if typeof(values.animation) == "table" then
 		data.animation:load(values.animation)
@@ -77,6 +156,8 @@ function TimingSave:clone()
 		save._data[idx] = container:clone()
 	end
 
+	save._meta = cloneValue(self._meta)
+
 	return save
 end
 
@@ -99,7 +180,7 @@ function TimingSave:equals(other)
 		end
 	end
 
-	return true
+	return valuesEqual(self._meta, other._meta)
 end
 
 ---Get timing save count.
@@ -124,6 +205,7 @@ function TimingSave:serialize()
 		animation = data.animation:serialize(),
 		part = data.part:serialize(),
 		sound = data.sound:serialize(),
+		meta = cloneValue(self._meta),
 	}
 end
 
@@ -138,6 +220,7 @@ function TimingSave.new(values)
 		part = TimingContainer.new(PartTiming),
 		sound = TimingContainer.new(SoundTiming),
 	}
+	self._meta = {}
 
 	if values then
 		self:load(values)

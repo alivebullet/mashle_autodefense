@@ -99,6 +99,27 @@ local function loadInternalTimings(animationContainer, partContainer, soundConta
 	return false
 end
 
+---Sync persisted harvester state into the current timing config metadata.
+local function syncHarvesterStateToConfig()
+	local ok, TimingHarvester = pcall(require, "Features/Combat/TimingHarvester")
+	if not ok or type(TimingHarvester) ~= "table" or type(TimingHarvester.serializePersistentState) ~= "function" then
+		return
+	end
+
+	config:metadata().harvester = TimingHarvester.serializePersistentState()
+end
+
+---Restore persisted harvester state from the current timing config metadata.
+local function syncHarvesterStateFromConfig()
+	local ok, TimingHarvester = pcall(require, "Features/Combat/TimingHarvester")
+	if not ok or type(TimingHarvester) ~= "table" or type(TimingHarvester.loadPersistentState) ~= "function" then
+		return
+	end
+
+	local metadata = config:metadata()
+	TimingHarvester.loadPersistentState(metadata and metadata.harvester or nil)
+end
+
 ---Get save files list.
 ---@return table
 function SaveManager.list()
@@ -164,6 +185,7 @@ function SaveManager.merge(name, type)
 	end
 
 	config:merge(TimingSave.new(result), type)
+	syncHarvesterStateFromConfig()
 
 	Logger.notify("Config file %s has merged with the loaded one.", name)
 end
@@ -231,6 +253,8 @@ function SaveManager.write(name)
 	if not name or #name <= 0 then
 		return -1, Logger.longNotify("Config name cannot be empty.")
 	end
+
+	syncHarvesterStateToConfig()
 
 	local success, result = pcall(Serializer.marshal, config:serialize())
 
@@ -330,6 +354,8 @@ function SaveManager.load(name)
 		return Logger.warn("Timing manager ran into the error '%s' while attempting to load config %s.", result, name)
 	end
 
+	syncHarvesterStateFromConfig()
+
 	Logger.notify(
 		"Config file %s has loaded with %i timings in %.2f seconds.",
 		name,
@@ -410,6 +436,7 @@ function SaveManager.init()
 		end
 
 		SaveManager.lct = os.clock()
+		syncHarvesterStateToConfig()
 
 		if config:equals(llc) then
 			return

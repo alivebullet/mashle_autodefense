@@ -49,6 +49,24 @@ return LPH_NO_VIRTUALIZE(function()
 	local OUTCOME_WAIT_S = 0.5
 	local ATTRIB_MAX_DISTANCE = 60
 
+	---Create a serializable banned entry.
+	---@param aid string
+	---@param info table?
+	---@return table
+	local function persistentBannedEntry(aid, info)
+		local meta = type(info) == "table" and type(info.meta) == "table" and info.meta or {}
+		return {
+			meta = {
+				aid = aid,
+				entityName = type(meta.entityName) == "string" and meta.entityName or "?",
+				priority = type(meta.priority) == "string" and meta.priority or "?",
+				bannedAt = type(meta.bannedAt) == "number" and meta.bannedAt or 0,
+			},
+			sampleCount = type(info) == "table" and type(info.sampleCount) == "number" and info.sampleCount or 0,
+			seenCount = type(info) == "table" and type(info.seenCount) == "number" and info.seenCount or 0,
+		}
+	end
+
 	---Get the current harvester minimum distance.
 	---@return number
 	local function harvesterMinDistance()
@@ -403,6 +421,46 @@ return LPH_NO_VIRTUALIZE(function()
 		if count == 0 then
 			Logger.warn("[Harvester][Banned] no banned animations.")
 		end
+	end
+
+	---Serialize persistent harvester state for config saves.
+	---@return table
+	function TimingHarvester.serializePersistentState()
+		local out = {}
+		for aid, info in next, bannedAnims do
+			out[aid] = persistentBannedEntry(aid, info)
+		end
+
+		return {
+			bannedAnims = out,
+		}
+	end
+
+	---Load persistent harvester state from config saves.
+	---@param state table?
+	function TimingHarvester.loadPersistentState(state)
+		local loaded = {}
+		if type(state) == "table" and type(state.bannedAnims) == "table" then
+			for aid, info in next, state.bannedAnims do
+				if type(aid) == "string" and aid ~= "" then
+					loaded[aid] = persistentBannedEntry(aid, info)
+				end
+			end
+		end
+
+		bannedAnims = loaded
+
+		for aid in next, loaded do
+			observedAnims[aid] = nil
+		end
+
+		local filtered = {}
+		for _, entry in ipairs(recentAnims) do
+			if not loaded[entry.aid] then
+				table.insert(filtered, entry)
+			end
+		end
+		recentAnims = filtered
 	end
 
 	---Record a parry press. Opens a pending-outcome window.
