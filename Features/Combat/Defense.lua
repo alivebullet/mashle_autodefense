@@ -106,6 +106,7 @@ local addParryLog = LPH_NO_VIRTUALIZE(function(descendant)
 		return
 	end
 
+	AttributeListener.clearParryCooldown()
 	Library:AddTelemetryEntry("(%s) Instance '%s' created in effect folder.", effectFolder.Name, descendant.Name)
 end)
 

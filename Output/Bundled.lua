@@ -9005,6 +9005,11 @@ function AttributeListener.markParryAttempt()
 	AttributeListener.lastParry = tick()
 end
 
+---Clear the local parry cooldown when the game confirms a successful parry.
+function AttributeListener.clearParryCooldown()
+	AttributeListener.lastParry = nil
+end
+
 ---Read a CharacterState BoolValue on the local character.
 ---@param name string
 ---@return boolean
@@ -10241,6 +10246,7 @@ local addParryLog = LPH_NO_VIRTUALIZE(function(descendant)
 		return
 	end
 
+	AttributeListener.clearParryCooldown()
 	Library:AddTelemetryEntry("(%s) Instance '%s' created in effect folder.", effectFolder.Name, descendant.Name)
 end)
 
