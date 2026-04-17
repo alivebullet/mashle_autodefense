@@ -12962,7 +12962,10 @@ local InputClient = {}
 -- Services.
 local players = game:GetService("Players")
 local userInputService = game:GetService("UserInputService")
+local virtualInputManager = game:GetService("VirtualInputManager")
 local replicatedStorage = game:GetService("ReplicatedStorage")
+
+local DASH_INPUT_HOLD_S = 0.12
 
 ---@module Utility.Configuration
 local Configuration = require("Utility/Configuration")
@@ -12997,6 +13000,21 @@ function InputClient.block(state)
 	updateCharacterState:FireServer("Blocking", state)
 end
 
+---@param keyCode Enum.KeyCode?
+---@param isDown boolean
+---@return boolean
+local function sendMovementKeyEvent(keyCode, isDown)
+	if not keyCode then
+		return false
+	end
+
+	local ok = pcall(function()
+		virtualInputManager:SendKeyEvent(isDown, keyCode, false, game)
+	end)
+
+	return ok
+end
+
 ---Dash (Mashle). Fires RequestModule with direction string and cooldown payload.
 ---Note: Mashle appears to infer actual movement from held keys server-side, so a bare
 ---remote fire may not produce movement. If dash fallback silently no-ops, either turn
@@ -13017,6 +13035,7 @@ function InputClient.dash()
 
 	local key = Configuration.expectOptionValue("DefaultDashDirection") or "S"
 	local keys = { "W", "A", "S", "D" }
+	local keyCode = nil
 
 	if key == "Random" then
 		key = keys[math.random(1, #keys)]
@@ -13029,13 +13048,35 @@ function InputClient.dash()
 
 		if ok and kc and userInputService:IsKeyDown(kc) then
 			key = k
+			keyCode = kc
+		end
+	end
+
+	if not keyCode then
+		local ok, kc = pcall(function()
+			return Enum.KeyCode[key]
+		end)
+
+		if ok then
+			keyCode = kc
 		end
 	end
 
 	local direction = directionMap[key] or "GroundBack"
+	local simulatedKey = false
+
+	if keyCode and not userInputService:IsKeyDown(keyCode) then
+		simulatedKey = sendMovementKeyEvent(keyCode, true)
+	end
 
 	ParryCooldownProbe.onDashAttempt("script")
 	requestModule:FireServer("Misc", "Dash", direction, { DashCooldown = 1.75 })
+
+	if simulatedKey then
+		task.delay(DASH_INPUT_HOLD_S, function()
+			sendMovementKeyEvent(keyCode, false)
+		end)
+	end
 end
 
 ---Parry. Fires the dedicated Misc/Parry remote in ReplicatedStorage.
