@@ -323,6 +323,16 @@ return LPH_NO_VIRTUALIZE(function()
 		end
 		isInitialized = true
 
+		-- Parent to CoreGui manually since we're loaded after CoreGuiManager.set() already ran.
+		if not screenGui.Parent then
+			local ok, coreGui = pcall(function()
+				return game:GetService("CoreGui")
+			end)
+			if ok and coreGui then
+				screenGui.Parent = coreGui
+			end
+		end
+
 		Library:MakeDraggable(outer)
 
 		Library:AddToRegistry(inner, {
