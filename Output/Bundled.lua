@@ -9176,6 +9176,21 @@ return LPH_NO_VIRTUALIZE(function()
 	local OUTCOME_WAIT_S = 0.5
 	local ATTRIB_MAX_DISTANCE = 60
 
+	---Get the display label for an entity inside the harvester.
+	---@param entity Model?
+	---@return string
+	local function entityLabel(entity)
+		if typeof(entity) ~= "Instance" then
+			return "?"
+		end
+
+		if players:GetPlayerFromCharacter(entity) then
+			return "Player"
+		end
+
+		return entity.Name or "?"
+	end
+
 	---Create a serializable banned entry.
 	---@param aid string
 	---@param info table?
@@ -9433,12 +9448,13 @@ return LPH_NO_VIRTUALIZE(function()
 			end
 		end
 
-		markObserved(aid, resolvedEntity and resolvedEntity.Name or "?", (track and track.Priority) and track.Priority.Name or "?")
+		local label = entityLabel(resolvedEntity)
+		markObserved(aid, label, (track and track.Priority) and track.Priority.Name or "?")
 
 		table.insert(recentAnims, {
 			aid = aid,
 			entity = resolvedEntity,
-			entityName = resolvedEntity and resolvedEntity.Name or "?",
+			entityName = label,
 			t0 = tick(),
 			speed = (track and track.Speed) or 1.0,
 			length = (track and track.Length) or 0,
@@ -9846,13 +9862,15 @@ return LPH_NO_VIRTUALIZE(function()
 		local out = {}
 		for aid, b in next, samples do
 			local solved = TimingHarvester.solve(aid)
+			local labelName = b.meta.entityName == "Player"
+				and string.format("Player - (%s)", aid)
+				or string.format("%s (%s)", b.meta.entityName, aid)
 			local label
 			if solved and solved.bestWhen then
 				label = string.format(
-					"[%s] %s (%s) n=%d/P%d/p%d/f%d when=%dms",
+					"[%s] %s n=%d/P%d/p%d/f%d when=%dms",
 					b.meta.priority or "?",
-					b.meta.entityName,
-					aid,
+					labelName,
 					solved.sampleCount,
 					solved.perfectCount,
 					solved.parryCount,
@@ -9860,7 +9878,12 @@ return LPH_NO_VIRTUALIZE(function()
 					math.round((solved.bestWhen or 0) * 1000)
 				)
 			else
-				label = string.format("[%s] %s (%s) n=%d no-solve", b.meta.priority or "?", b.meta.entityName, aid, (solved and solved.sampleCount) or 0)
+				label = string.format(
+					"[%s] %s n=%d no-solve",
+					b.meta.priority or "?",
+					labelName,
+					(solved and solved.sampleCount) or 0
+				)
 			end
 			table.insert(out, label)
 		end
@@ -20017,6 +20040,18 @@ return LPH_NO_VIRTUALIZE(function()
 	local btnDump = makeBtn("Dump Log", UDim2.new(0.5, 1, 0, 68), UDim2.new(0.25, -2, 0, 28))
 	local btnClrDbg = makeBtn("Clr Debug", UDim2.new(0.75, 1, 0, 68), UDim2.new(0.25, -1, 0, 28))
 
+	---@param entityName string?
+	---@param aid string
+	---@return string
+	local function lineOneLabel(entityName, aid)
+		local shortAid = aid:match("(%d+)$") or aid
+		if entityName == "Player" then
+			return string.format("Player - rbxassetid://%s", shortAid)
+		end
+
+		return string.format("%s  rbxassetid://%s", entityName or "?", shortAid)
+	end
+
 	local function updateModeButtons()
 		if viewMode == "banned" then
 			btnToggleView.Text = "View Seen"
@@ -20068,11 +20103,10 @@ return LPH_NO_VIRTUALIZE(function()
 
 		-- Line 1: [Priority] EntityName  rbxassetid://...
 		local priStr = banned and "BANNED" or (data.meta.priority or "?")
-		local shortAid = aid:match("(%d+)$") or aid
 		local l1 = Instance.new("TextLabel")
 		l1.FontFace = FONT
 		l1.TextColor3 = Library.FontColor
-		l1.Text = string.format("[%s] %s  rbxassetid://%s", priStr, data.meta.entityName or "?", shortAid)
+		l1.Text = string.format("[%s] %s", priStr, lineOneLabel(data.meta.entityName, aid))
 		l1.BackgroundTransparency = 1
 		l1.Position = UDim2.new(0, 4, 0, 2)
 		l1.Size = UDim2.new(1, -8, 0, 16)

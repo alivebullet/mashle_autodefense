@@ -180,6 +180,18 @@ return LPH_NO_VIRTUALIZE(function()
 	local btnDump = makeBtn("Dump Log", UDim2.new(0.5, 1, 0, 68), UDim2.new(0.25, -2, 0, 28))
 	local btnClrDbg = makeBtn("Clr Debug", UDim2.new(0.75, 1, 0, 68), UDim2.new(0.25, -1, 0, 28))
 
+	---@param entityName string?
+	---@param aid string
+	---@return string
+	local function lineOneLabel(entityName, aid)
+		local shortAid = aid:match("(%d+)$") or aid
+		if entityName == "Player" then
+			return string.format("Player - rbxassetid://%s", shortAid)
+		end
+
+		return string.format("%s  rbxassetid://%s", entityName or "?", shortAid)
+	end
+
 	local function updateModeButtons()
 		if viewMode == "banned" then
 			btnToggleView.Text = "View Seen"
@@ -231,11 +243,10 @@ return LPH_NO_VIRTUALIZE(function()
 
 		-- Line 1: [Priority] EntityName  rbxassetid://...
 		local priStr = banned and "BANNED" or (data.meta.priority or "?")
-		local shortAid = aid:match("(%d+)$") or aid
 		local l1 = Instance.new("TextLabel")
 		l1.FontFace = FONT
 		l1.TextColor3 = Library.FontColor
-		l1.Text = string.format("[%s] %s  rbxassetid://%s", priStr, data.meta.entityName or "?", shortAid)
+		l1.Text = string.format("[%s] %s", priStr, lineOneLabel(data.meta.entityName, aid))
 		l1.BackgroundTransparency = 1
 		l1.Position = UDim2.new(0, 4, 0, 2)
 		l1.Size = UDim2.new(1, -8, 0, 16)
