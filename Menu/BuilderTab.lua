@@ -31,6 +31,9 @@ local AnimationLogger = require("Features/Game/AnimationLogger")
 ---@module Features.Combat.TimingHarvester
 local TimingHarvester = require("Features/Combat/TimingHarvester")
 
+---@module Features.Game.AnimationVisualizer
+local AnimationVisualizer = require("Features/Game/AnimationVisualizer")
+
 ---@module GUI.Library
 local Library = require("GUI/Library")
 
@@ -367,6 +370,16 @@ function BuilderTab.initHarvesterSection(groupbox)
 		Text = "Harvested Animations",
 		Values = {},
 		AllowNull = true,
+		Callback = function(value)
+			if not value then
+				return
+			end
+
+			local aid = TimingHarvester.aidFromLabel(value)
+			if aid then
+				AnimationVisualizer.loadId(aid)
+			end
+		end,
 	})
 
 	local harvestedNameInput = groupbox:AddInput("HarvestedTimingName", {

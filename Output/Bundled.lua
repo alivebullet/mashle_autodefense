@@ -141,6 +141,12 @@ local AnimationLogger = require("Features/Game/AnimationLogger")
 ---@module Features.Combat.TimingHarvester
 local TimingHarvester = require("Features/Combat/TimingHarvester")
 
+---@module Features.Combat.Defense
+local Defense = require("Features/Combat/Defense")
+
+---@module Features.Combat.AttributeListener
+local AttributeListener = require("Features/Combat/AttributeListener")
+
 ---@module Utility.PersistentData
 local PersistentData = require("Utility/PersistentData")
 
@@ -237,7 +243,9 @@ queuedChunk()
 		safeCall("SaveManager.init", SaveManager.init)
 		safeCall("Menu.init", Menu.init)
 		safeCall("AnimationLogger.init", AnimationLogger.init)
+		safeCall("AttributeListener.init", AttributeListener.init)
 		safeCall("TimingHarvester.init", TimingHarvester.init)
+		safeCall("Defense.init", Defense.init)
 		return Logger.notify("Compatibility UI mode is active in %ims.", (os.clock() - startTimestamp) * 1000)
 	end
 
@@ -8653,6 +8661,200 @@ end
 return PersistentData
 
 end)
+__bundle_register("Features/Combat/AttributeListener", function(require, _LOADED, __bundle_register, __bundle_modules)
+-- AttributeListener module.
+local AttributeListener = { lastParry = nil, lastDash = nil, lastKnock = nil }
+
+---@modules Utility.Maid
+local Maid = require("Utility/Maid")
+
+---@module Utility.Signal
+local Signal = require("Utility/Signal")
+
+---@module Features.Combat.TimingHarvester
+local TimingHarvester = require("Features/Combat/TimingHarvester")
+
+-- Services.
+local players = game:GetService("Players")
+
+-- Top-level maid (CharacterAdded / CharacterRemoving signals).
+local attributeMaid = Maid.new()
+
+-- Per-character maid; cleaned on CharacterRemoving. Holds watchers on CharacterState BoolValues.
+local stateMaid = Maid.new()
+
+-- BoolValues under character.CharacterState that we care about. When the .Value flips true,
+-- the paired callback fires. Mashle splits state across many BoolValues instead of using
+-- Type Soul's single CurrentState string attribute.
+local WATCHED = {
+	Parry = function()
+		AttributeListener.lastParry = tick()
+		TimingHarvester.onParryResult(false)
+	end,
+	PerfectParry = function()
+		AttributeListener.lastParry = tick()
+		TimingHarvester.onParryResult(true)
+	end,
+	DashDodge = function()
+		AttributeListener.lastDash = tick()
+	end,
+	Ragdoll = function()
+		AttributeListener.lastKnock = tick()
+	end,
+	Stun = function()
+		AttributeListener.lastKnock = tick()
+	end,
+}
+
+---Read a CharacterState BoolValue from any character. Returns false when missing.
+---@param character Model?
+---@param name string
+---@return boolean
+function AttributeListener.csOn(character, name)
+	if not character then
+		return false
+	end
+
+	local state = character:FindFirstChild("CharacterState")
+	if not state then
+		return false
+	end
+
+	local bv = state:FindFirstChild(name)
+	if not bv or not bv:IsA("BoolValue") then
+		return false
+	end
+
+	return bv.Value
+end
+
+---Read a CharacterState BoolValue on the local character.
+---@param name string
+---@return boolean
+function AttributeListener.cs(name)
+	local localPlayer = players.LocalPlayer
+	return AttributeListener.csOn(localPlayer and localPlayer.Character, name)
+end
+
+---Hook a BoolValue so true transitions call onTrue.
+---@param bv BoolValue
+---@param onTrue function
+local function watchBool(bv, onTrue)
+	local signal = Signal.new(bv:GetPropertyChangedSignal("Value"))
+	stateMaid:add(signal:connect("AttributeListener_CSValue_" .. bv.Name, function()
+		if bv.Value then
+			onTrue()
+		end
+	end))
+end
+
+---Attach watchers to every BoolValue we care about under a CharacterState folder, and handle
+---late-added ones via ChildAdded.
+---@param characterState Instance
+local function attachStateWatches(characterState)
+	for name, onTrue in pairs(WATCHED) do
+		local bv = characterState:FindFirstChild(name)
+		if bv and bv:IsA("BoolValue") then
+			watchBool(bv, onTrue)
+		end
+	end
+
+	local childAdded = Signal.new(characterState.ChildAdded)
+	stateMaid:add(childAdded:connect("AttributeListener_OnCSChildAdded", function(child)
+		local onTrue = WATCHED[child.Name]
+		if onTrue and child:IsA("BoolValue") then
+			watchBool(child, onTrue)
+		end
+	end))
+end
+
+---On character added.
+---@param character Model
+local function onCharacterAdded(character)
+	stateMaid:clean()
+
+	task.spawn(function()
+		local cs = character:WaitForChild("CharacterState", 10)
+		if cs then
+			attachStateWatches(cs)
+		end
+	end)
+end
+
+---On character removing.
+---@param character Model
+local function onCharacterRemoving(character)
+	stateMaid:clean()
+	AttributeListener.lastParry = nil
+	AttributeListener.lastDash = nil
+	AttributeListener.lastKnock = nil
+end
+
+---Knocked recently?
+---@return boolean
+function AttributeListener.krecently()
+	local localPlayer = players.LocalPlayer
+	local character = localPlayer.Character
+	if not character then
+		return false
+	end
+
+	return AttributeListener.lastKnock and tick() - AttributeListener.lastKnock <= 0.250
+end
+
+---Can we parry?
+---@return boolean
+function AttributeListener.cparry()
+	local localPlayer = players.LocalPlayer
+	local character = localPlayer.Character
+	if not character then
+		return false
+	end
+
+	return not AttributeListener.lastParry or tick() - AttributeListener.lastParry >= (2000 / 1000)
+end
+
+---Can we dash?
+---@return boolean
+function AttributeListener.cdash()
+	local localPlayer = players.LocalPlayer
+	local character = localPlayer.Character
+	if not character then
+		return false
+	end
+
+	return not AttributeListener.lastDash or tick() - AttributeListener.lastDash >= (1750 / 1000)
+end
+
+---Initialize AttributeListener module.
+function AttributeListener.init()
+	local localPlayer = players.LocalPlayer
+	local characterAddedSignal = Signal.new(localPlayer.CharacterAdded)
+	local characterRemovingSignal = Signal.new(localPlayer.CharacterRemoving)
+
+	attributeMaid:add(characterAddedSignal:connect("AttributeListener_OnCharacterAdded", function(character)
+		onCharacterAdded(character)
+	end))
+
+	attributeMaid:add(characterRemovingSignal:connect("AttributeListener_OnCharacterRemoving", function(character)
+		onCharacterRemoving(character)
+	end))
+
+	if localPlayer.Character then
+		onCharacterAdded(localPlayer.Character)
+	end
+end
+
+---Detach AttributeListener module.
+function AttributeListener.detach()
+	stateMaid:clean()
+	attributeMaid:clean()
+end
+
+-- Return AttributeListener module.
+return AttributeListener
+
+end)
 __bundle_register("Features/Combat/TimingHarvester", function(require, _LOADED, __bundle_register, __bundle_modules)
 return LPH_NO_VIRTUALIZE(function()
 	-- TimingHarvester module.
@@ -9275,837 +9477,6 @@ return LPH_NO_VIRTUALIZE(function()
 end)()
 
 end)
-__bundle_register("Features/Game/AnimationLogger", function(require, _LOADED, __bundle_register, __bundle_modules)
-return LPH_NO_VIRTUALIZE(function()
-	-- Universal Animation Logger module.
-	-- Monitors all nearby Animators and logs animation plays/keyframes to the Info Logger.
-	-- Also captures animation data for auto-generating timings.
-	local AnimationLogger = {}
-
-	---@module Utility.Maid
-	local Maid = require("Utility/Maid")
-
-	---@module GUI.Library
-	local Library = require("GUI/Library")
-
-	---@module Utility.Configuration
-	local Configuration = require("Utility/Configuration")
-
-	---@module Game.Timings.AnimationTiming
-	local AnimationTiming = require("Game/Timings/AnimationTiming")
-
-	---@module Game.Timings.Action
-	local Action = require("Game/Timings/Action")
-
-	---@module Game.Timings.SaveManager
-	local SaveManager = require("Game/Timings/SaveManager")
-
-	---@module Utility.Logger
-	local Logger = require("Utility/Logger")
-
-	---@module Game.DynamicTiming
-	local DynamicTiming = require("Game/DynamicTiming")
-
-	---@module Features.Combat.TimingHarvester
-	local TimingHarvester = require("Features/Combat/TimingHarvester")
-
-	-- Services.
-	local players = game:GetService("Players")
-
-	-- Logger maid.
-	local loggerMaid = Maid.new()
-
-	-- Tracked animators mapped to their cleanup maids.
-	local trackedAnimators = {}
-	local isInitialized = false
-
-	-- Captured animation data for auto-generating timings.
-	-- Key: animation ID, Value: { id, entityName, length, speed, keyframes = { { name, timePosition } }, capturedAt }
-	local capturedAnimations = {}
-
-	-- Animations currently playing on nearby entities (for damage-hit capture).
-	-- Key: animation ID, Value: { track = AnimationTrack, entity = Model }
-	-- Note: only the most recent track per aid is stored.
-	local activePlayingTracks = {}
-
-	---Get distance from local player to an entity.
-	---@param entity Model
-	---@return number
-	local function getDistanceTo(entity)
-		local localChar = players.LocalPlayer and players.LocalPlayer.Character
-		if not localChar or not localChar.PrimaryPart then
-			return math.huge
-		end
-
-		local targetPart = entity:IsA("Model") and entity.PrimaryPart
-			or entity:FindFirstChildWhichIsA("BasePart", true)
-		if not targetPart then
-			return math.huge
-		end
-
-		return (localChar.PrimaryPart.Position - targetPart.Position).Magnitude
-	end
-
-	---Check if a distance is within the configured logger range.
-	---@param distance number
-	---@return boolean
-	local function isInRange(distance)
-		local minDist = Configuration.expectOptionValue("MinimumLoggerDistance") or 0
-		local maxDist = Configuration.expectOptionValue("MaximumLoggerDistance") or 0
-
-		-- A max of 0 means no distance filtering.
-		if maxDist <= 0 then
-			return true
-		end
-
-		return distance >= minDist and distance <= maxDist
-	end
-
-	---Check if a distance is within the capture-specific range.
-	---@param distance number
-	---@return boolean
-	local function isInCaptureRange(distance)
-		local minDist = Configuration.expectOptionValue("CaptureMinDistance") or 0
-		local maxDist = Configuration.expectOptionValue("CaptureMaxDistance") or 0
-
-		-- A max of 0 means no distance filtering.
-		if maxDist <= 0 then
-			return true
-		end
-
-		return distance >= minDist and distance <= maxDist
-	end
-
-	---Get the parent entity (Model) of an Animator.
-	---@param animator Animator
-	---@return Model?
-	local function getEntityFromAnimator(animator)
-		local current = animator.Parent
-		while current do
-			if current:IsA("Model") and current:FindFirstChildWhichIsA("Humanoid") then
-				return current
-			end
-			current = current.Parent
-		end
-		return nil
-	end
-
-	---Track an animator and log its animations.
-	---@param animator Animator
-	---@param entity Model
-	local function trackAnimator(animator, entity)
-		if trackedAnimators[animator] then
-			return
-		end
-
-		-- Skip the local player's own animator.
-		local localChar = players.LocalPlayer and players.LocalPlayer.Character
-		if localChar and entity == localChar then
-			return
-		end
-
-		local animMaid = Maid.new()
-		trackedAnimators[animator] = animMaid
-
-		-- Listen for new animations being played.
-		animMaid:add(animator.AnimationPlayed:Connect(function(track)
-			local distance = getDistanceTo(entity)
-			local inLogRange = isInRange(distance)
-			local inCaptureRange = isInCaptureRange(distance)
-
-			local aid = track.Animation and track.Animation.AnimationId or "Unknown"
-
-			-- Feed the timing harvester unconditionally (self-gated by EnableTimingHarvester + its own distance filter).
-			TimingHarvester.onAnimationStart(aid, entity, track)
-
-			if not inLogRange and not inCaptureRange then
-				return
-			end
-
-			-- Log the animation play event.
-			if inLogRange then
-				Library:AddTelemetryEntry(
-					"(%.1fm) '%s' played '%s' (Speed: %.2f, Length: %.3f)",
-					distance,
-					entity.Name,
-					aid,
-					track.Speed,
-					track.Length
-				)
-			end
-
-			-- Capture animation data if enabled.
-			if Configuration.expectToggleValue("EnableAnimationCapture") and inCaptureRange then
-				if not capturedAnimations[aid] then
-					capturedAnimations[aid] = {
-						id = aid,
-						entityName = entity.Name,
-						length = track.Length,
-						speed = track.Speed,
-						keyframes = {},
-						capturedAt = os.clock(),
-					}
-				end
-
-				-- Register as an active playing track so damage-hit capture can snapshot it.
-				activePlayingTracks[aid] = { track = track, entity = entity }
-
-				-- Deregister when the track stops.
-				animMaid:add(track.Stopped:Connect(function()
-					if activePlayingTracks[aid] and activePlayingTracks[aid].track == track then
-						activePlayingTracks[aid] = nil
-					end
-				end))
-			end
-
-			-- Listen for keyframes on this track.
-			animMaid:add(track.KeyframeReached:Connect(function(kfName)
-				if inLogRange then
-					Library:AddKeyFrameEntry(getDistanceTo(entity), aid, kfName, track.TimePosition, false)
-				end
-
-				-- Capture keyframe data if enabled.
-				if Configuration.expectToggleValue("EnableAnimationCapture") and inCaptureRange and capturedAnimations[aid] then
-					local kfs = capturedAnimations[aid].keyframes
-					local exists = false
-
-					for _, kf in next, kfs do
-						if kf.name == kfName then
-							exists = true
-							break
-						end
-					end
-
-					if not exists then
-						table.insert(kfs, {
-							name = kfName,
-							timePosition = track.TimePosition,
-						})
-					end
-				end
-			end))
-		end))
-
-		-- Clean up when the animator is removed from the game.
-		animMaid:add(animator.Destroying:Connect(function()
-			if trackedAnimators[animator] then
-				trackedAnimators[animator]:clean()
-				trackedAnimators[animator] = nil
-			end
-		end))
-	end
-
-	---Scan an entity for an Animator and start tracking it.
-	---@param entity Model
-	local function scanEntity(entity)
-		if not entity then
-			return
-		end
-
-		local animator = entity:FindFirstChildWhichIsA("Animator", true)
-		if animator then
-			trackAnimator(animator, entity)
-		end
-	end
-
-	---Handle a player joining or their character spawning.
-	---@param player Player
-	local function onPlayer(player)
-		if player == players.LocalPlayer then
-			return
-		end
-
-		if player.Character then
-			scanEntity(player.Character)
-		end
-
-		loggerMaid:add(player.CharacterAdded:Connect(function(char)
-			-- Wait briefly for Animator to be added.
-			task.defer(function()
-				scanEntity(char)
-			end)
-		end))
-	end
-
-	---Handle a new Animator appearing anywhere in workspace (catches NPCs).
-	---@param descendant Instance
-	local function onDescendantAdded(descendant)
-		if not descendant:IsA("Animator") then
-			return
-		end
-
-		local entity = getEntityFromAnimator(descendant)
-		if entity then
-			trackAnimator(descendant, entity)
-		end
-	end
-
-	---Get list of captured animation IDs.
-	---@return string[]
-	function AnimationLogger.capturedList()
-		local list = {}
-
-		for aid, data in next, capturedAnimations do
-			table.insert(list, string.format("%s (%s)", data.entityName, aid))
-		end
-
-		table.sort(list)
-
-		return list
-	end
-
-	---Get captured animation data by animation ID.
-	---@param aid string
-	---@return table?
-	function AnimationLogger.getCaptured(aid)
-		return capturedAnimations[aid]
-	end
-
-	---Get all captured animations.
-	---@return table
-	function AnimationLogger.getAllCaptured()
-		return capturedAnimations
-	end
-
-	---Clear all captured animations.
-	function AnimationLogger.clearCaptured()
-		capturedAnimations = {}
-	end
-
-	---Generate an AnimationTiming from a captured animation and push it into the config.
-	---@param aid string The animation ID to generate from.
-	---@param timingName string? Optional custom name (defaults to entityName_shortened_id).
-	---@return boolean, string
-	function AnimationLogger.generateTiming(aid, timingName)
-		local data = capturedAnimations[aid]
-		if not data then
-			return false, "No captured data for animation ID: " .. tostring(aid)
-		end
-
-		-- Check SaveManager is ready.
-		if not SaveManager.as then
-			return false, "SaveManager not initialized."
-		end
-
-		-- Check if timing already exists.
-		local existing = SaveManager.as:index(aid)
-		if existing then
-			return false, string.format("Timing already exists for '%s' (%s).", aid, existing.name)
-		end
-
-		-- Generate a name if not provided.
-		local name = timingName
-		if not name or #name <= 0 then
-			-- Use entityName + short ID.
-			local shortId = aid:match("(%d+)$") or tostring(os.clock())
-			name = string.format("%s_%s", data.entityName, shortId)
-		end
-
-		-- Check name uniqueness.
-		local existingName = SaveManager.as:find(name)
-		if existingName then
-			return false, string.format("Timing name '%s' already exists.", name)
-		end
-
-		-- Create the timing.
-		local timing = AnimationTiming.new()
-		timing._id = aid
-		timing.name = name
-		timing.tag = "Undefined"
-		timing.imdd = 0
-		timing.imxd = 100
-		timing.hitbox = Vector3.new(20, 20, 30)
-		timing.fhb = true
-		timing.pfh = true
-		timing.pfht = 0.15
-
-		-- ── Determine the best raw _when value ──────────────────────────────
-		-- Priority: damage-hit capture > named keyframe > all keyframes > length fallback.
-
-		if data.damageHitTime then
-			-- Damage-hit capture: adjust for projectile travel time via DynamicTiming.
-			local rawMs = data.damageHitTime.timePos * 1000
-			local dist = data.damageHitTime.distance
-			local adjMs = DynamicTiming.adjust(rawMs, dist, aid, nil)
-
-			local action = Action.new()
-			action.name = "Action_DamageHit_1"
-			action._type = "Parry"
-			action._when = PP_SCRAMBLE_RE_NUM(math.round(adjMs))
-			action.hitbox = Vector3.new(20, 20, 30)
-			action.ihbc = false
-
-			timing.actions:push(action)
-
-			Logger.notify(
-				"[DynamicTiming] '%s': raw=%.0fms dist=%.1fst adj=%.0fms",
-				name, rawMs, dist, adjMs
-			)
-		else
-			-- Fallback: keyframe-based generation (original behaviour).
-			local hitKeyframes = {}
-			for _, kf in next, data.keyframes do
-				local kfLower = string.lower(kf.name)
-				if kfLower:find("hit") or kfLower:find("damage") or kfLower:find("attack") or kfLower:find("impact") then
-					table.insert(hitKeyframes, kf)
-				end
-			end
-
-			local actionKeyframes = #hitKeyframes > 0 and hitKeyframes or data.keyframes
-
-			if #actionKeyframes > 0 then
-				table.sort(actionKeyframes, function(a, b)
-					return a.timePosition < b.timePosition
-				end)
-
-				for i, kf in next, actionKeyframes do
-					local action = Action.new()
-					action.name = string.format("Action_%s_%d", kf.name, i)
-					action._type = "Parry"
-					action._when = PP_SCRAMBLE_RE_NUM(math.round(kf.timePosition * 1000))
-					action.hitbox = Vector3.new(20, 20, 30)
-					action.ihbc = false
-
-					timing.actions:push(action)
-				end
-			else
-				-- No keyframes at all — use 60% of animation length.
-				local action = Action.new()
-				action.name = "Action_Default_1"
-				action._type = "Parry"
-				action._when = PP_SCRAMBLE_RE_NUM(math.round(data.length * 0.6 * 1000))
-				action.hitbox = Vector3.new(20, 20, 30)
-				action.ihbc = false
-
-				timing.actions:push(action)
-			end
-		end
-
-		-- Push into SaveManager config.
-		local success, err = pcall(SaveManager.as.config.push, SaveManager.as.config, timing)
-		if not success then
-			return false, "Failed to push timing: " .. tostring(err)
-		end
-
-		Logger.notify("Generated timing '%s' for animation '%s' with %d action(s).", name, aid, timing.actions:count())
-
-		return true, name
-	end
-
-	---Generate timings for ALL captured animations.
-	---@return number, number
-	function AnimationLogger.generateAll()
-		local successCount = 0
-		local failCount = 0
-
-		for aid, _ in next, capturedAnimations do
-			local success, _ = AnimationLogger.generateTiming(aid)
-
-			if success then
-				successCount = successCount + 1
-			else
-				failCount = failCount + 1
-			end
-		end
-
-		Logger.notify("Generated %d timings (%d skipped/failed).", successCount, failCount)
-
-		return successCount, failCount
-	end
-
-	---Hook the local player's Humanoid HealthChanged to capture damage-hit timestamps.
-	---Called once per character spawn so it always targets the current Humanoid.
-	---@param character Model
-	local function hookLocalDamage(character)
-		local humanoid = character:FindFirstChildWhichIsA("Humanoid")
-		if not humanoid then
-			return
-		end
-
-		local lastHealth = humanoid.Health
-
-		loggerMaid:add(humanoid.HealthChanged:Connect(function(newHealth)
-			-- Only care about damage (health decrease).
-			if newHealth >= lastHealth then
-				lastHealth = newHealth
-				return
-			end
-
-			lastHealth = newHealth
-
-			-- Snapshot every currently-active animation's time position and distance.
-			-- This becomes the authoritative 'when' for auto-generated timings.
-			if not Configuration.expectToggleValue("EnableAnimationCapture") then
-				return
-			end
-
-			for aid, entry in next, activePlayingTracks do
-				if not capturedAnimations[aid] then
-					continue
-				end
-
-				local timePos = entry.track.TimePosition
-				local dist = getDistanceTo(entry.entity)
-
-				-- Only update if this snapshot is more recent (later in the animation).
-				local existing = capturedAnimations[aid].damageHitTime
-				if not existing or timePos > existing.timePos then
-					capturedAnimations[aid].damageHitTime = {
-						timePos = timePos,
-						distance = dist,
-					}
-
-					Library:AddTelemetryEntry(
-						"[DamageCap] '%s' hit at tp=%.3fs dist=%.1fst",
-						capturedAnimations[aid].entityName,
-						timePos,
-						dist
-					)
-				end
-			end
-		end))
-	end
-
-	---Initialize AnimationLogger module.
-	function AnimationLogger.init()
-		if isInitialized then
-			return
-		end
-
-		-- Hook local player damage on current and future characters.
-		local localPlayer = players.LocalPlayer
-		if localPlayer then
-			if localPlayer.Character then
-				hookLocalDamage(localPlayer.Character)
-			end
-
-			loggerMaid:add(localPlayer.CharacterAdded:Connect(function(char)
-				task.defer(function()
-					hookLocalDamage(char)
-				end)
-			end))
-		end
-
-		-- Track existing players.
-		for _, player in next, players:GetPlayers() do
-			onPlayer(player)
-		end
-
-		-- Track new players.
-		loggerMaid:add(players.PlayerAdded:Connect(function(player)
-			onPlayer(player)
-		end))
-
-		-- Track Animators appearing in workspace (NPCs, etc).
-		loggerMaid:add(workspace.DescendantAdded:Connect(onDescendantAdded))
-
-		-- Scan existing workspace descendants for Animators.
-		for _, descendant in next, workspace:GetDescendants() do
-			onDescendantAdded(descendant)
-		end
-
-		isInitialized = true
-	end
-
-	---Detach AnimationLogger module.
-	function AnimationLogger.detach()
-		for _, maid in next, trackedAnimators do
-			maid:clean()
-		end
-
-		trackedAnimators = {}
-		loggerMaid:clean()
-		isInitialized = false
-	end
-
-	-- Return AnimationLogger module.
-	return AnimationLogger
-end)()
-
-end)
-__bundle_register("Game/DynamicTiming", function(require, _LOADED, __bundle_register, __bundle_modules)
--- DynamicTiming module.
--- Calculates a latency- and distance-compensated action trigger time from raw
--- observed data (keyframe timestamp or damage-hit timestamp).
---
--- Architecture note:
---   The AnimatorDefender already compensates for ping via its `offset` field
---   (set to `rdelay()` at init).  DynamicTiming's job is orthogonal: it
---   subtracts projectile travel-time from the raw `_when` so that stored
---   timings fire BEFORE the projectile arrives, not at impact.
---
---   For melee attacks the travel speed is effectively instant, so the
---   dictionary value should be a large number (e.g. 999) to make
---   travelTimeMs negligible.
---
--- Usage (inside AnimationLogger.generateTiming):
---   local adjMs = DynamicTiming.adjust(rawWhenMs, distanceStuds, aid, nil)
---   action._when = adjMs
-local DynamicTiming = {}
-
--- Default fallback attack speed (studs / second).
--- Applies when no dictionary entry exists and no projectile part is supplied.
-DynamicTiming.defaultSpeed = 40
-
--- Per-animation-ID attack speed overrides.  Keys are full rbxassetid:// strings.
--- Melee attacks should use a very large value so travel time is ~0.
--- Projectiles should use their actual stud/s travel speed.
-local attackSpeedDictionary = {}
-
----Resolve the attack speed for a given animation ID and optional projectile part.
----@param aid string Full animation asset ID (e.g. "rbxassetid://123456").
----@param projectilePart BasePart? If the attack spawns a moving part, pass it here.
----@return number studs per second
-local function resolveSpeed(aid, projectilePart)
-	-- 1. Try live physics velocity from the projectile part.
-	if projectilePart and projectilePart:IsA("BasePart") then
-		local speed = projectilePart.AssemblyLinearVelocity.Magnitude
-		if speed > 0.1 then
-			return speed
-		end
-		-- Velocity was zero (anchored / not yet moving). Fall through.
-	end
-
-	-- 2. Dictionary lookup.
-	local dictSpeed = attackSpeedDictionary[aid]
-	if dictSpeed and dictSpeed > 0 then
-		return dictSpeed
-	end
-
-	-- 3. Global default.
-	return DynamicTiming.defaultSpeed
-end
-
----Adjust a raw observed `_when` value (in milliseconds) to account for
----projectile travel time.
----
----Formula:
----  adjustedMs = rawWhenMs - (distanceStuds / attackSpeed) * 1000
----
----A negative result is clamped to 0 (fire as soon as animation plays).
----
----@param rawWhenMs number Raw `_when` in milliseconds (from damage-hit or keyframe).
----@param distanceStuds number Distance from attacker to defender at the time of
----                             capture, in studs.
----@param aid string Full animation asset ID string.
----@param projectilePart BasePart? Optional live projectile BasePart.
----@return number adjustedMs Adjusted `_when` in milliseconds, >= 0.
-function DynamicTiming.adjust(rawWhenMs, distanceStuds, aid, projectilePart)
-	local speed = resolveSpeed(aid, projectilePart)
-
-	-- Time (seconds) for the attack to travel from attacker to defender.
-	local travelTimeMs = (distanceStuds / speed) * 1000
-
-	local adjusted = rawWhenMs - travelTimeMs
-
-	return math.max(adjusted, 0)
-end
-
----Set the attack speed for a specific animation ID.
----@param aid string Full animation asset ID string.
----@param speed number studs per second (use 999 for instant/melee).
-function DynamicTiming.setSpeed(aid, speed)
-	attackSpeedDictionary[aid] = speed
-end
-
----Get the stored attack speed for a specific animation ID.
----Returns nil if no entry exists (defaultSpeed will be used at adjust-time).
----@param aid string
----@return number?
-function DynamicTiming.getSpeed(aid)
-	return attackSpeedDictionary[aid]
-end
-
----Bulk-set speeds from a dictionary table { [aid] = speed }.
----@param dict table<string, number>
-function DynamicTiming.loadSpeeds(dict)
-	for aid, speed in next, dict do
-		attackSpeedDictionary[aid] = speed
-	end
-end
-
--- Return module.
-return DynamicTiming
-
-end)
-__bundle_register("Game/Timings/ModuleManager", function(require, _LOADED, __bundle_register, __bundle_modules)
--- Internal modules if they exist, provided by to by preprocessor.
-local INTERNAL_MODULES = {}
-local INTERNAL_GLOBALS = {}
-
--- Module manager.
----@note: All globals get executed first but never ran. This gets set in the global environment of every future module after.
-local ModuleManager = { modules = {}, globals = {} }
-
----@module Utility.Filesystem
-local Filesystem = require("Utility/Filesystem")
-
----@module Utility.Logger
-local Logger = require("Utility/Logger")
-
----@module Game.Timings.Action
-local Action = require("Game/Timings/Action")
-
----@module Features.Combat.Objects.Task
-local Task = require("Features/Combat/Objects/Task")
-
----@module Game.Timings.Timing
-local Timing = require("Game/Timings/Timing")
-
----@module Utility.TaskSpawner
-local TaskSpawner = require("Utility/TaskSpawner")
-
----@module Features.Combat.Targeting
-local Targeting = require("Features/Combat/Targeting")
-
----@module Game.Timings.PartTiming
-local PartTiming = require("Game/Timings/PartTiming")
-
----@module Features.Combat.Objects.HitboxOptions
-local HitboxOptions = require("Features/Combat/Objects/HitboxOptions")
-
----@module Features.Combat.Objects.RepeatInfo
-local RepeatInfo = require("Features/Combat/Objects/RepeatInfo")
-
----@module Utility.Maid
-local Maid = require("Utility/Maid")
-
----@module Utility.Signal
-local Signal = require("Utility/Signal")
-
--- Module filesystem.
-local fs = Filesystem.new("Lycoris-Rewrite-TypeSoul-Modules")
-local gfs = Filesystem.new(fs:append("Globals"))
-
--- Detach table.
-local tdetach = {}
-
----Execute module function.
----@param lf function
----@param id string
----@param file string?
----@param global boolean
-function ModuleManager.execute(lf, id, file, global)
-	---@module Features.Combat.Defense
-	---@note: For some reason, it broke lol. Returned nil.
-	-- Has to do with loadingPlaceholder issue. A very wide cyclic dependency where depdendencies rely on each other can break the bundler.
-	local Defense = require("Features/Combat/Defense")
-
-	-- Set function environment to allow for internal modules.
-	getfenv(lf).Timing = Timing
-	getfenv(lf).PartTiming = PartTiming
-	getfenv(lf).Defense = Defense
-	getfenv(lf).Action = Action
-	getfenv(lf).Task = Task
-	getfenv(lf).Maid = Maid
-	getfenv(lf).Signal = Signal
-	getfenv(lf).TaskSpawner = TaskSpawner
-	getfenv(lf).Targeting = Targeting
-	getfenv(lf).Logger = Logger
-	getfenv(lf).HitboxOptions = HitboxOptions
-	getfenv(lf).RepeatInfo = RepeatInfo
-
-	-- Load globals if we should.
-	for name, entry in next, (not global) and ModuleManager.globals or {} do
-		getfenv(lf)[name] = entry
-	end
-
-	-- Run executable function to initialize it.
-	local success, result = pcall(lf)
-	if not success then
-		return Logger.warn("Module '%s' failed to load due to error '%s' while executing.", file or id, result)
-	end
-
-	if global and typeof(result) ~= "table" then
-		return Logger.warn("Global module '%s' is invalid because it does not return a table.", file or id)
-	end
-
-	-- Output table.
-	local output = global and ModuleManager.globals or ModuleManager.modules
-
-	-- Get the result as a function.
-	output[id] = result
-
-	-- If this is a global, the result is a table, and it has a detach function, store it for later.
-	if typeof(result) == "table" and typeof(result.detach) == "function" then
-		tdetach[#tdetach + 1] = result.detach
-	end
-end
-
----Load file modules from filesystem.
----@param tfs Filesystem The filesystem to load from.
----@param global boolean Whether we're loading global modules or not.
-function ModuleManager.load(tfs, global)
-	for _, file in next, tfs:list(false) do
-		-- Check if it is .lua.
-		if string.sub(file, #file - 3, #file) ~= ".lua" then
-			continue
-		end
-
-		-- Get string to load.
-		local ls = tfs:read(file)
-
-		-- Get function that we can execute.
-		local lf, lr = loadstring(ls)
-		if not lf then
-			Logger.warn("Module file '%s' failed to load due to error '%s' while loading.", file, lr)
-			continue
-		end
-
-		ModuleManager.execute(lf, string.sub(file, 1, #file - 4), file, global)
-	end
-end
-
----List loaded modules.
----@return string[]
-function ModuleManager.loaded()
-	local out = {}
-
-	for file, _ in next, ModuleManager.modules do
-		table.insert(out, file)
-	end
-
-	return out
-end
-
----Detach functions.
-function ModuleManager.detach()
-	for _, detach in next, tdetach do
-		detach()
-	end
-
-	-- Clear detach table.
-	tdetach = {}
-end
-
----Refresh ModuleManager.
-function ModuleManager.refresh()
-	-- Detach all modules.
-	ModuleManager.detach()
-
-	-- Reset current list.
-	ModuleManager.modules = {}
-	ModuleManager.globals = {}
-
-	for id, lf in next, INTERNAL_GLOBALS do
-		ModuleManager.execute(lf, id, nil, true)
-	end
-
-	for id, lf in next, INTERNAL_MODULES do
-		ModuleManager.execute(lf, id, nil, false)
-	end
-
-	-- Load all globals in our filesystem.
-	ModuleManager.load(gfs, true)
-
-	-- Load all modules in our filesystem.
-	ModuleManager.load(fs, false)
-end
-
--- Return ModuleManager module.
-return ModuleManager
-
-end)
 __bundle_register("Features/Combat/Defense", function(require, _LOADED, __bundle_register, __bundle_modules)
 ---@module Utility.Signal
 local Signal = require("Utility/Signal")
@@ -10575,200 +9946,6 @@ end
 
 -- Return Defense module.
 return Defense
-
-end)
-__bundle_register("Features/Combat/AttributeListener", function(require, _LOADED, __bundle_register, __bundle_modules)
--- AttributeListener module.
-local AttributeListener = { lastParry = nil, lastDash = nil, lastKnock = nil }
-
----@modules Utility.Maid
-local Maid = require("Utility/Maid")
-
----@module Utility.Signal
-local Signal = require("Utility/Signal")
-
----@module Features.Combat.TimingHarvester
-local TimingHarvester = require("Features/Combat/TimingHarvester")
-
--- Services.
-local players = game:GetService("Players")
-
--- Top-level maid (CharacterAdded / CharacterRemoving signals).
-local attributeMaid = Maid.new()
-
--- Per-character maid; cleaned on CharacterRemoving. Holds watchers on CharacterState BoolValues.
-local stateMaid = Maid.new()
-
--- BoolValues under character.CharacterState that we care about. When the .Value flips true,
--- the paired callback fires. Mashle splits state across many BoolValues instead of using
--- Type Soul's single CurrentState string attribute.
-local WATCHED = {
-	Parry = function()
-		AttributeListener.lastParry = tick()
-		TimingHarvester.onParryResult(false)
-	end,
-	PerfectParry = function()
-		AttributeListener.lastParry = tick()
-		TimingHarvester.onParryResult(true)
-	end,
-	DashDodge = function()
-		AttributeListener.lastDash = tick()
-	end,
-	Ragdoll = function()
-		AttributeListener.lastKnock = tick()
-	end,
-	Stun = function()
-		AttributeListener.lastKnock = tick()
-	end,
-}
-
----Read a CharacterState BoolValue from any character. Returns false when missing.
----@param character Model?
----@param name string
----@return boolean
-function AttributeListener.csOn(character, name)
-	if not character then
-		return false
-	end
-
-	local state = character:FindFirstChild("CharacterState")
-	if not state then
-		return false
-	end
-
-	local bv = state:FindFirstChild(name)
-	if not bv or not bv:IsA("BoolValue") then
-		return false
-	end
-
-	return bv.Value
-end
-
----Read a CharacterState BoolValue on the local character.
----@param name string
----@return boolean
-function AttributeListener.cs(name)
-	local localPlayer = players.LocalPlayer
-	return AttributeListener.csOn(localPlayer and localPlayer.Character, name)
-end
-
----Hook a BoolValue so true transitions call onTrue.
----@param bv BoolValue
----@param onTrue function
-local function watchBool(bv, onTrue)
-	local signal = Signal.new(bv:GetPropertyChangedSignal("Value"))
-	stateMaid:add(signal:connect("AttributeListener_CSValue_" .. bv.Name, function()
-		if bv.Value then
-			onTrue()
-		end
-	end))
-end
-
----Attach watchers to every BoolValue we care about under a CharacterState folder, and handle
----late-added ones via ChildAdded.
----@param characterState Instance
-local function attachStateWatches(characterState)
-	for name, onTrue in pairs(WATCHED) do
-		local bv = characterState:FindFirstChild(name)
-		if bv and bv:IsA("BoolValue") then
-			watchBool(bv, onTrue)
-		end
-	end
-
-	local childAdded = Signal.new(characterState.ChildAdded)
-	stateMaid:add(childAdded:connect("AttributeListener_OnCSChildAdded", function(child)
-		local onTrue = WATCHED[child.Name]
-		if onTrue and child:IsA("BoolValue") then
-			watchBool(child, onTrue)
-		end
-	end))
-end
-
----On character added.
----@param character Model
-local function onCharacterAdded(character)
-	stateMaid:clean()
-
-	task.spawn(function()
-		local cs = character:WaitForChild("CharacterState", 10)
-		if cs then
-			attachStateWatches(cs)
-		end
-	end)
-end
-
----On character removing.
----@param character Model
-local function onCharacterRemoving(character)
-	stateMaid:clean()
-	AttributeListener.lastParry = nil
-	AttributeListener.lastDash = nil
-	AttributeListener.lastKnock = nil
-end
-
----Knocked recently?
----@return boolean
-function AttributeListener.krecently()
-	local localPlayer = players.LocalPlayer
-	local character = localPlayer.Character
-	if not character then
-		return false
-	end
-
-	return AttributeListener.lastKnock and tick() - AttributeListener.lastKnock <= 0.250
-end
-
----Can we parry?
----@return boolean
-function AttributeListener.cparry()
-	local localPlayer = players.LocalPlayer
-	local character = localPlayer.Character
-	if not character then
-		return false
-	end
-
-	return not AttributeListener.lastParry or tick() - AttributeListener.lastParry >= (2000 / 1000)
-end
-
----Can we dash?
----@return boolean
-function AttributeListener.cdash()
-	local localPlayer = players.LocalPlayer
-	local character = localPlayer.Character
-	if not character then
-		return false
-	end
-
-	return not AttributeListener.lastDash or tick() - AttributeListener.lastDash >= (1750 / 1000)
-end
-
----Initialize AttributeListener module.
-function AttributeListener.init()
-	local localPlayer = players.LocalPlayer
-	local characterAddedSignal = Signal.new(localPlayer.CharacterAdded)
-	local characterRemovingSignal = Signal.new(localPlayer.CharacterRemoving)
-
-	attributeMaid:add(characterAddedSignal:connect("AttributeListener_OnCharacterAdded", function(character)
-		onCharacterAdded(character)
-	end))
-
-	attributeMaid:add(characterRemovingSignal:connect("AttributeListener_OnCharacterRemoving", function(character)
-		onCharacterRemoving(character)
-	end))
-
-	if localPlayer.Character then
-		onCharacterAdded(localPlayer.Character)
-	end
-end
-
----Detach AttributeListener module.
-function AttributeListener.detach()
-	stateMaid:clean()
-	attributeMaid:clean()
-end
-
--- Return AttributeListener module.
-return AttributeListener
 
 end)
 __bundle_register("Features/Combat/PositionHistory", function(require, _LOADED, __bundle_register, __bundle_modules)
@@ -12502,6 +11679,184 @@ end
 return Target
 
 end)
+__bundle_register("Game/Timings/ModuleManager", function(require, _LOADED, __bundle_register, __bundle_modules)
+-- Internal modules if they exist, provided by to by preprocessor.
+local INTERNAL_MODULES = {}
+local INTERNAL_GLOBALS = {}
+
+-- Module manager.
+---@note: All globals get executed first but never ran. This gets set in the global environment of every future module after.
+local ModuleManager = { modules = {}, globals = {} }
+
+---@module Utility.Filesystem
+local Filesystem = require("Utility/Filesystem")
+
+---@module Utility.Logger
+local Logger = require("Utility/Logger")
+
+---@module Game.Timings.Action
+local Action = require("Game/Timings/Action")
+
+---@module Features.Combat.Objects.Task
+local Task = require("Features/Combat/Objects/Task")
+
+---@module Game.Timings.Timing
+local Timing = require("Game/Timings/Timing")
+
+---@module Utility.TaskSpawner
+local TaskSpawner = require("Utility/TaskSpawner")
+
+---@module Features.Combat.Targeting
+local Targeting = require("Features/Combat/Targeting")
+
+---@module Game.Timings.PartTiming
+local PartTiming = require("Game/Timings/PartTiming")
+
+---@module Features.Combat.Objects.HitboxOptions
+local HitboxOptions = require("Features/Combat/Objects/HitboxOptions")
+
+---@module Features.Combat.Objects.RepeatInfo
+local RepeatInfo = require("Features/Combat/Objects/RepeatInfo")
+
+---@module Utility.Maid
+local Maid = require("Utility/Maid")
+
+---@module Utility.Signal
+local Signal = require("Utility/Signal")
+
+-- Module filesystem.
+local fs = Filesystem.new("Lycoris-Rewrite-TypeSoul-Modules")
+local gfs = Filesystem.new(fs:append("Globals"))
+
+-- Detach table.
+local tdetach = {}
+
+---Execute module function.
+---@param lf function
+---@param id string
+---@param file string?
+---@param global boolean
+function ModuleManager.execute(lf, id, file, global)
+	---@module Features.Combat.Defense
+	---@note: For some reason, it broke lol. Returned nil.
+	-- Has to do with loadingPlaceholder issue. A very wide cyclic dependency where depdendencies rely on each other can break the bundler.
+	local Defense = require("Features/Combat/Defense")
+
+	-- Set function environment to allow for internal modules.
+	getfenv(lf).Timing = Timing
+	getfenv(lf).PartTiming = PartTiming
+	getfenv(lf).Defense = Defense
+	getfenv(lf).Action = Action
+	getfenv(lf).Task = Task
+	getfenv(lf).Maid = Maid
+	getfenv(lf).Signal = Signal
+	getfenv(lf).TaskSpawner = TaskSpawner
+	getfenv(lf).Targeting = Targeting
+	getfenv(lf).Logger = Logger
+	getfenv(lf).HitboxOptions = HitboxOptions
+	getfenv(lf).RepeatInfo = RepeatInfo
+
+	-- Load globals if we should.
+	for name, entry in next, (not global) and ModuleManager.globals or {} do
+		getfenv(lf)[name] = entry
+	end
+
+	-- Run executable function to initialize it.
+	local success, result = pcall(lf)
+	if not success then
+		return Logger.warn("Module '%s' failed to load due to error '%s' while executing.", file or id, result)
+	end
+
+	if global and typeof(result) ~= "table" then
+		return Logger.warn("Global module '%s' is invalid because it does not return a table.", file or id)
+	end
+
+	-- Output table.
+	local output = global and ModuleManager.globals or ModuleManager.modules
+
+	-- Get the result as a function.
+	output[id] = result
+
+	-- If this is a global, the result is a table, and it has a detach function, store it for later.
+	if typeof(result) == "table" and typeof(result.detach) == "function" then
+		tdetach[#tdetach + 1] = result.detach
+	end
+end
+
+---Load file modules from filesystem.
+---@param tfs Filesystem The filesystem to load from.
+---@param global boolean Whether we're loading global modules or not.
+function ModuleManager.load(tfs, global)
+	for _, file in next, tfs:list(false) do
+		-- Check if it is .lua.
+		if string.sub(file, #file - 3, #file) ~= ".lua" then
+			continue
+		end
+
+		-- Get string to load.
+		local ls = tfs:read(file)
+
+		-- Get function that we can execute.
+		local lf, lr = loadstring(ls)
+		if not lf then
+			Logger.warn("Module file '%s' failed to load due to error '%s' while loading.", file, lr)
+			continue
+		end
+
+		ModuleManager.execute(lf, string.sub(file, 1, #file - 4), file, global)
+	end
+end
+
+---List loaded modules.
+---@return string[]
+function ModuleManager.loaded()
+	local out = {}
+
+	for file, _ in next, ModuleManager.modules do
+		table.insert(out, file)
+	end
+
+	return out
+end
+
+---Detach functions.
+function ModuleManager.detach()
+	for _, detach in next, tdetach do
+		detach()
+	end
+
+	-- Clear detach table.
+	tdetach = {}
+end
+
+---Refresh ModuleManager.
+function ModuleManager.refresh()
+	-- Detach all modules.
+	ModuleManager.detach()
+
+	-- Reset current list.
+	ModuleManager.modules = {}
+	ModuleManager.globals = {}
+
+	for id, lf in next, INTERNAL_GLOBALS do
+		ModuleManager.execute(lf, id, nil, true)
+	end
+
+	for id, lf in next, INTERNAL_MODULES do
+		ModuleManager.execute(lf, id, nil, false)
+	end
+
+	-- Load all globals in our filesystem.
+	ModuleManager.load(gfs, true)
+
+	-- Load all modules in our filesystem.
+	ModuleManager.load(fs, false)
+end
+
+-- Return ModuleManager module.
+return ModuleManager
+
+end)
 __bundle_register("Features/Combat/Objects/Task", function(require, _LOADED, __bundle_register, __bundle_modules)
 ---@module Utility.TaskSpawner
 local TaskSpawner = require("Utility/TaskSpawner")
@@ -12938,7 +12293,12 @@ end)
 ---@param action Action
 ---@return boolean
 AnimatorDefender.valid = LPH_NO_VIRTUALIZE(function(self, timing, action)
+	local dbg = Configuration.expectToggleValue("EnableDefenseDebug")
+
 	if not Defender.valid(self, timing, action) then
+		if dbg then
+			Logger.warn("[DefDbg] Defender.valid() base check FAILED for '%s'.", PP_SCRAMBLE_STR(timing.name))
+		end
 		return false
 	end
 
@@ -12952,6 +12312,10 @@ AnimatorDefender.valid = LPH_NO_VIRTUALIZE(function(self, timing, action)
 
 	local target = self:target(self.entity)
 	if not target then
+		if dbg then
+			Logger.warn("[DefDbg] Targeting.find() returned nil for '%s'. Entity may not be in workspace.Entities, IgnoreMobs may be on, or distance/FOV limits exceeded.",
+				self.entity.Name)
+		end
 		return self:notify(timing, "Not a viable target.")
 	end
 
@@ -12961,6 +12325,9 @@ AnimatorDefender.valid = LPH_NO_VIRTUALIZE(function(self, timing, action)
 	end
 
 	if self:stopped(self.track, timing) then
+		if dbg then
+			Logger.warn("[DefDbg] Track stopped for '%s'.", PP_SCRAMBLE_STR(timing.name))
+		end
 		return false
 	end
 
@@ -12975,12 +12342,23 @@ AnimatorDefender.valid = LPH_NO_VIRTUALIZE(function(self, timing, action)
 
 	local hc = self:hc(options, timing.duih and info or nil)
 	if hc then
+		if dbg then
+			Logger.warn("[DefDbg] Hitbox check PASSED for '%s'.", PP_SCRAMBLE_STR(timing.name))
+		end
 		return true
 	end
 
 	local pc = self:fpc(timing, options)
 	if pc then
+		if dbg then
+			Logger.warn("[DefDbg] Facing prediction check PASSED for '%s'.", PP_SCRAMBLE_STR(timing.name))
+		end
 		return true
+	end
+
+	if dbg then
+		Logger.warn("[DefDbg] HITBOX MISS for '%s' (dist=%.1f, hitbox=%s).",
+			PP_SCRAMBLE_STR(timing.name), self:distance(self.entity) or -1, tostring(timing.hitbox))
 	end
 
 	return self:notify(timing, "Not in hitbox.")
@@ -13131,11 +12509,16 @@ end
 ---@param self AnimatorDefender
 ---@param track AnimationTrack
 AnimatorDefender.process = LPH_NO_VIRTUALIZE(function(self, track)
+	local dbg = Configuration.expectToggleValue("EnableDefenseDebug")
+
 	if players.LocalPlayer.Character and self.entity == players.LocalPlayer.Character then
 		return
 	end
 
 	if not self:pvalidate(track) then
+		if dbg then
+			Logger.warn("[DefDbg] Skipped track (pvalidate false): priority=%s", tostring(track.Priority))
+		end
 		return
 	end
 
@@ -13149,9 +12532,14 @@ AnimatorDefender.process = LPH_NO_VIRTUALIZE(function(self, track)
 
 	-- Animation ID.
 	local aid = tostring(track.Animation.AnimationId)
+	local distance = self:distance(self.entity)
+
+	if dbg then
+		Logger.warn("[DefDbg] AnimPlayed entity='%s' aid=%s dist=%.1f spd=%.2f len=%.3f",
+			self.entity.Name, aid, distance or -1, track.Speed, track.Length)
+	end
 
 	-- In logging range? 0 on max = no upper bound (matches AnimationLogger semantics).
-	local distance = self:distance(self.entity)
 	local minDist = Configuration.expectOptionValue("MinimumLoggerDistance") or 0
 	local maxDist = Configuration.expectOptionValue("MaximumLoggerDistance") or 0
 	local ilr = distance and distance >= minDist and (maxDist <= 0 or distance <= maxDist)
@@ -13170,7 +12558,17 @@ AnimatorDefender.process = LPH_NO_VIRTUALIZE(function(self, track)
 	---@type AnimationTiming?
 	local timing = self:initial(self.entity, SaveManager.as, self.entity.Name, aid)
 	if not timing then
+		if dbg then
+			Logger.warn("[DefDbg] No timing found for aid=%s (entity='%s', dist=%.1f). Miss logged.",
+				aid, self.entity.Name, distance or -1)
+		end
 		return
+	end
+
+	if dbg then
+		Logger.warn("[DefDbg] Timing matched: '%s' (actions=%d, imdd=%d, imxd=%d)",
+			PP_SCRAMBLE_STR(timing.name), timing.actions:count(),
+			PP_SCRAMBLE_NUM(timing.imdd), PP_SCRAMBLE_NUM(timing.imxd))
 	end
 
 	if ilr then
@@ -13178,11 +12576,17 @@ AnimatorDefender.process = LPH_NO_VIRTUALIZE(function(self, track)
 	end
 
 	if not Configuration.expectToggleValue("EnableAutoDefense") then
+		if dbg then
+			Logger.warn("[DefDbg] Auto-defense is DISABLED. Skipping action scheduling.")
+		end
 		return
 	end
 
 	local humanoidRootPart = self.entity:FindFirstChild("HumanoidRootPart")
 	if not humanoidRootPart then
+		if dbg then
+			Logger.warn("[DefDbg] Entity '%s' has no HumanoidRootPart.", self.entity.Name)
+		end
 		return
 	end
 
@@ -13367,6 +12771,659 @@ end
 
 -- Return PlaybackData module.
 return PlaybackData
+
+end)
+__bundle_register("Features/Game/AnimationLogger", function(require, _LOADED, __bundle_register, __bundle_modules)
+return LPH_NO_VIRTUALIZE(function()
+	-- Universal Animation Logger module.
+	-- Monitors all nearby Animators and logs animation plays/keyframes to the Info Logger.
+	-- Also captures animation data for auto-generating timings.
+	local AnimationLogger = {}
+
+	---@module Utility.Maid
+	local Maid = require("Utility/Maid")
+
+	---@module GUI.Library
+	local Library = require("GUI/Library")
+
+	---@module Utility.Configuration
+	local Configuration = require("Utility/Configuration")
+
+	---@module Game.Timings.AnimationTiming
+	local AnimationTiming = require("Game/Timings/AnimationTiming")
+
+	---@module Game.Timings.Action
+	local Action = require("Game/Timings/Action")
+
+	---@module Game.Timings.SaveManager
+	local SaveManager = require("Game/Timings/SaveManager")
+
+	---@module Utility.Logger
+	local Logger = require("Utility/Logger")
+
+	---@module Game.DynamicTiming
+	local DynamicTiming = require("Game/DynamicTiming")
+
+	---@module Features.Combat.TimingHarvester
+	local TimingHarvester = require("Features/Combat/TimingHarvester")
+
+	-- Services.
+	local players = game:GetService("Players")
+
+	-- Logger maid.
+	local loggerMaid = Maid.new()
+
+	-- Tracked animators mapped to their cleanup maids.
+	local trackedAnimators = {}
+	local isInitialized = false
+
+	-- Captured animation data for auto-generating timings.
+	-- Key: animation ID, Value: { id, entityName, length, speed, keyframes = { { name, timePosition } }, capturedAt }
+	local capturedAnimations = {}
+
+	-- Animations currently playing on nearby entities (for damage-hit capture).
+	-- Key: animation ID, Value: { track = AnimationTrack, entity = Model }
+	-- Note: only the most recent track per aid is stored.
+	local activePlayingTracks = {}
+
+	---Get distance from local player to an entity.
+	---@param entity Model
+	---@return number
+	local function getDistanceTo(entity)
+		local localChar = players.LocalPlayer and players.LocalPlayer.Character
+		if not localChar or not localChar.PrimaryPart then
+			return math.huge
+		end
+
+		local targetPart = entity:IsA("Model") and entity.PrimaryPart
+			or entity:FindFirstChildWhichIsA("BasePart", true)
+		if not targetPart then
+			return math.huge
+		end
+
+		return (localChar.PrimaryPart.Position - targetPart.Position).Magnitude
+	end
+
+	---Check if a distance is within the configured logger range.
+	---@param distance number
+	---@return boolean
+	local function isInRange(distance)
+		local minDist = Configuration.expectOptionValue("MinimumLoggerDistance") or 0
+		local maxDist = Configuration.expectOptionValue("MaximumLoggerDistance") or 0
+
+		-- A max of 0 means no distance filtering.
+		if maxDist <= 0 then
+			return true
+		end
+
+		return distance >= minDist and distance <= maxDist
+	end
+
+	---Check if a distance is within the capture-specific range.
+	---@param distance number
+	---@return boolean
+	local function isInCaptureRange(distance)
+		local minDist = Configuration.expectOptionValue("CaptureMinDistance") or 0
+		local maxDist = Configuration.expectOptionValue("CaptureMaxDistance") or 0
+
+		-- A max of 0 means no distance filtering.
+		if maxDist <= 0 then
+			return true
+		end
+
+		return distance >= minDist and distance <= maxDist
+	end
+
+	---Get the parent entity (Model) of an Animator.
+	---@param animator Animator
+	---@return Model?
+	local function getEntityFromAnimator(animator)
+		local current = animator.Parent
+		while current do
+			if current:IsA("Model") and current:FindFirstChildWhichIsA("Humanoid") then
+				return current
+			end
+			current = current.Parent
+		end
+		return nil
+	end
+
+	---Track an animator and log its animations.
+	---@param animator Animator
+	---@param entity Model
+	local function trackAnimator(animator, entity)
+		if trackedAnimators[animator] then
+			return
+		end
+
+		-- Skip the local player's own animator.
+		local localChar = players.LocalPlayer and players.LocalPlayer.Character
+		if localChar and entity == localChar then
+			return
+		end
+
+		local animMaid = Maid.new()
+		trackedAnimators[animator] = animMaid
+
+		-- Listen for new animations being played.
+		animMaid:add(animator.AnimationPlayed:Connect(function(track)
+			local distance = getDistanceTo(entity)
+			local inLogRange = isInRange(distance)
+			local inCaptureRange = isInCaptureRange(distance)
+
+			local aid = track.Animation and track.Animation.AnimationId or "Unknown"
+
+			-- Feed the timing harvester unconditionally (self-gated by EnableTimingHarvester + its own distance filter).
+			TimingHarvester.onAnimationStart(aid, entity, track)
+
+			if not inLogRange and not inCaptureRange then
+				return
+			end
+
+			-- Log the animation play event.
+			if inLogRange then
+				Library:AddTelemetryEntry(
+					"(%.1fm) '%s' played '%s' (Speed: %.2f, Length: %.3f)",
+					distance,
+					entity.Name,
+					aid,
+					track.Speed,
+					track.Length
+				)
+			end
+
+			-- Capture animation data if enabled.
+			if Configuration.expectToggleValue("EnableAnimationCapture") and inCaptureRange then
+				if not capturedAnimations[aid] then
+					capturedAnimations[aid] = {
+						id = aid,
+						entityName = entity.Name,
+						length = track.Length,
+						speed = track.Speed,
+						keyframes = {},
+						capturedAt = os.clock(),
+					}
+				end
+
+				-- Register as an active playing track so damage-hit capture can snapshot it.
+				activePlayingTracks[aid] = { track = track, entity = entity }
+
+				-- Deregister when the track stops.
+				animMaid:add(track.Stopped:Connect(function()
+					if activePlayingTracks[aid] and activePlayingTracks[aid].track == track then
+						activePlayingTracks[aid] = nil
+					end
+				end))
+			end
+
+			-- Listen for keyframes on this track.
+			animMaid:add(track.KeyframeReached:Connect(function(kfName)
+				if inLogRange then
+					Library:AddKeyFrameEntry(getDistanceTo(entity), aid, kfName, track.TimePosition, false)
+				end
+
+				-- Capture keyframe data if enabled.
+				if Configuration.expectToggleValue("EnableAnimationCapture") and inCaptureRange and capturedAnimations[aid] then
+					local kfs = capturedAnimations[aid].keyframes
+					local exists = false
+
+					for _, kf in next, kfs do
+						if kf.name == kfName then
+							exists = true
+							break
+						end
+					end
+
+					if not exists then
+						table.insert(kfs, {
+							name = kfName,
+							timePosition = track.TimePosition,
+						})
+					end
+				end
+			end))
+		end))
+
+		-- Clean up when the animator is removed from the game.
+		animMaid:add(animator.Destroying:Connect(function()
+			if trackedAnimators[animator] then
+				trackedAnimators[animator]:clean()
+				trackedAnimators[animator] = nil
+			end
+		end))
+	end
+
+	---Scan an entity for an Animator and start tracking it.
+	---@param entity Model
+	local function scanEntity(entity)
+		if not entity then
+			return
+		end
+
+		local animator = entity:FindFirstChildWhichIsA("Animator", true)
+		if animator then
+			trackAnimator(animator, entity)
+		end
+	end
+
+	---Handle a player joining or their character spawning.
+	---@param player Player
+	local function onPlayer(player)
+		if player == players.LocalPlayer then
+			return
+		end
+
+		if player.Character then
+			scanEntity(player.Character)
+		end
+
+		loggerMaid:add(player.CharacterAdded:Connect(function(char)
+			-- Wait briefly for Animator to be added.
+			task.defer(function()
+				scanEntity(char)
+			end)
+		end))
+	end
+
+	---Handle a new Animator appearing anywhere in workspace (catches NPCs).
+	---@param descendant Instance
+	local function onDescendantAdded(descendant)
+		if not descendant:IsA("Animator") then
+			return
+		end
+
+		local entity = getEntityFromAnimator(descendant)
+		if entity then
+			trackAnimator(descendant, entity)
+		end
+	end
+
+	---Get list of captured animation IDs.
+	---@return string[]
+	function AnimationLogger.capturedList()
+		local list = {}
+
+		for aid, data in next, capturedAnimations do
+			table.insert(list, string.format("%s (%s)", data.entityName, aid))
+		end
+
+		table.sort(list)
+
+		return list
+	end
+
+	---Get captured animation data by animation ID.
+	---@param aid string
+	---@return table?
+	function AnimationLogger.getCaptured(aid)
+		return capturedAnimations[aid]
+	end
+
+	---Get all captured animations.
+	---@return table
+	function AnimationLogger.getAllCaptured()
+		return capturedAnimations
+	end
+
+	---Clear all captured animations.
+	function AnimationLogger.clearCaptured()
+		capturedAnimations = {}
+	end
+
+	---Generate an AnimationTiming from a captured animation and push it into the config.
+	---@param aid string The animation ID to generate from.
+	---@param timingName string? Optional custom name (defaults to entityName_shortened_id).
+	---@return boolean, string
+	function AnimationLogger.generateTiming(aid, timingName)
+		local data = capturedAnimations[aid]
+		if not data then
+			return false, "No captured data for animation ID: " .. tostring(aid)
+		end
+
+		-- Check SaveManager is ready.
+		if not SaveManager.as then
+			return false, "SaveManager not initialized."
+		end
+
+		-- Check if timing already exists.
+		local existing = SaveManager.as:index(aid)
+		if existing then
+			return false, string.format("Timing already exists for '%s' (%s).", aid, existing.name)
+		end
+
+		-- Generate a name if not provided.
+		local name = timingName
+		if not name or #name <= 0 then
+			-- Use entityName + short ID.
+			local shortId = aid:match("(%d+)$") or tostring(os.clock())
+			name = string.format("%s_%s", data.entityName, shortId)
+		end
+
+		-- Check name uniqueness.
+		local existingName = SaveManager.as:find(name)
+		if existingName then
+			return false, string.format("Timing name '%s' already exists.", name)
+		end
+
+		-- Create the timing.
+		local timing = AnimationTiming.new()
+		timing._id = aid
+		timing.name = name
+		timing.tag = "Undefined"
+		timing.imdd = 0
+		timing.imxd = 100
+		timing.hitbox = Vector3.new(20, 20, 30)
+		timing.fhb = true
+		timing.pfh = true
+		timing.pfht = 0.15
+
+		-- ── Determine the best raw _when value ──────────────────────────────
+		-- Priority: damage-hit capture > named keyframe > all keyframes > length fallback.
+
+		if data.damageHitTime then
+			-- Damage-hit capture: adjust for projectile travel time via DynamicTiming.
+			local rawMs = data.damageHitTime.timePos * 1000
+			local dist = data.damageHitTime.distance
+			local adjMs = DynamicTiming.adjust(rawMs, dist, aid, nil)
+
+			local action = Action.new()
+			action.name = "Action_DamageHit_1"
+			action._type = "Parry"
+			action._when = PP_SCRAMBLE_RE_NUM(math.round(adjMs))
+			action.hitbox = Vector3.new(20, 20, 30)
+			action.ihbc = false
+
+			timing.actions:push(action)
+
+			Logger.notify(
+				"[DynamicTiming] '%s': raw=%.0fms dist=%.1fst adj=%.0fms",
+				name, rawMs, dist, adjMs
+			)
+		else
+			-- Fallback: keyframe-based generation (original behaviour).
+			local hitKeyframes = {}
+			for _, kf in next, data.keyframes do
+				local kfLower = string.lower(kf.name)
+				if kfLower:find("hit") or kfLower:find("damage") or kfLower:find("attack") or kfLower:find("impact") then
+					table.insert(hitKeyframes, kf)
+				end
+			end
+
+			local actionKeyframes = #hitKeyframes > 0 and hitKeyframes or data.keyframes
+
+			if #actionKeyframes > 0 then
+				table.sort(actionKeyframes, function(a, b)
+					return a.timePosition < b.timePosition
+				end)
+
+				for i, kf in next, actionKeyframes do
+					local action = Action.new()
+					action.name = string.format("Action_%s_%d", kf.name, i)
+					action._type = "Parry"
+					action._when = PP_SCRAMBLE_RE_NUM(math.round(kf.timePosition * 1000))
+					action.hitbox = Vector3.new(20, 20, 30)
+					action.ihbc = false
+
+					timing.actions:push(action)
+				end
+			else
+				-- No keyframes at all — use 60% of animation length.
+				local action = Action.new()
+				action.name = "Action_Default_1"
+				action._type = "Parry"
+				action._when = PP_SCRAMBLE_RE_NUM(math.round(data.length * 0.6 * 1000))
+				action.hitbox = Vector3.new(20, 20, 30)
+				action.ihbc = false
+
+				timing.actions:push(action)
+			end
+		end
+
+		-- Push into SaveManager config.
+		local success, err = pcall(SaveManager.as.config.push, SaveManager.as.config, timing)
+		if not success then
+			return false, "Failed to push timing: " .. tostring(err)
+		end
+
+		Logger.notify("Generated timing '%s' for animation '%s' with %d action(s).", name, aid, timing.actions:count())
+
+		return true, name
+	end
+
+	---Generate timings for ALL captured animations.
+	---@return number, number
+	function AnimationLogger.generateAll()
+		local successCount = 0
+		local failCount = 0
+
+		for aid, _ in next, capturedAnimations do
+			local success, _ = AnimationLogger.generateTiming(aid)
+
+			if success then
+				successCount = successCount + 1
+			else
+				failCount = failCount + 1
+			end
+		end
+
+		Logger.notify("Generated %d timings (%d skipped/failed).", successCount, failCount)
+
+		return successCount, failCount
+	end
+
+	---Hook the local player's Humanoid HealthChanged to capture damage-hit timestamps.
+	---Called once per character spawn so it always targets the current Humanoid.
+	---@param character Model
+	local function hookLocalDamage(character)
+		local humanoid = character:FindFirstChildWhichIsA("Humanoid")
+		if not humanoid then
+			return
+		end
+
+		local lastHealth = humanoid.Health
+
+		loggerMaid:add(humanoid.HealthChanged:Connect(function(newHealth)
+			-- Only care about damage (health decrease).
+			if newHealth >= lastHealth then
+				lastHealth = newHealth
+				return
+			end
+
+			lastHealth = newHealth
+
+			-- Snapshot every currently-active animation's time position and distance.
+			-- This becomes the authoritative 'when' for auto-generated timings.
+			if not Configuration.expectToggleValue("EnableAnimationCapture") then
+				return
+			end
+
+			for aid, entry in next, activePlayingTracks do
+				if not capturedAnimations[aid] then
+					continue
+				end
+
+				local timePos = entry.track.TimePosition
+				local dist = getDistanceTo(entry.entity)
+
+				-- Only update if this snapshot is more recent (later in the animation).
+				local existing = capturedAnimations[aid].damageHitTime
+				if not existing or timePos > existing.timePos then
+					capturedAnimations[aid].damageHitTime = {
+						timePos = timePos,
+						distance = dist,
+					}
+
+					Library:AddTelemetryEntry(
+						"[DamageCap] '%s' hit at tp=%.3fs dist=%.1fst",
+						capturedAnimations[aid].entityName,
+						timePos,
+						dist
+					)
+				end
+			end
+		end))
+	end
+
+	---Initialize AnimationLogger module.
+	function AnimationLogger.init()
+		if isInitialized then
+			return
+		end
+
+		-- Hook local player damage on current and future characters.
+		local localPlayer = players.LocalPlayer
+		if localPlayer then
+			if localPlayer.Character then
+				hookLocalDamage(localPlayer.Character)
+			end
+
+			loggerMaid:add(localPlayer.CharacterAdded:Connect(function(char)
+				task.defer(function()
+					hookLocalDamage(char)
+				end)
+			end))
+		end
+
+		-- Track existing players.
+		for _, player in next, players:GetPlayers() do
+			onPlayer(player)
+		end
+
+		-- Track new players.
+		loggerMaid:add(players.PlayerAdded:Connect(function(player)
+			onPlayer(player)
+		end))
+
+		-- Track Animators appearing in workspace (NPCs, etc).
+		loggerMaid:add(workspace.DescendantAdded:Connect(onDescendantAdded))
+
+		-- Scan existing workspace descendants for Animators.
+		for _, descendant in next, workspace:GetDescendants() do
+			onDescendantAdded(descendant)
+		end
+
+		isInitialized = true
+	end
+
+	---Detach AnimationLogger module.
+	function AnimationLogger.detach()
+		for _, maid in next, trackedAnimators do
+			maid:clean()
+		end
+
+		trackedAnimators = {}
+		loggerMaid:clean()
+		isInitialized = false
+	end
+
+	-- Return AnimationLogger module.
+	return AnimationLogger
+end)()
+
+end)
+__bundle_register("Game/DynamicTiming", function(require, _LOADED, __bundle_register, __bundle_modules)
+-- DynamicTiming module.
+-- Calculates a latency- and distance-compensated action trigger time from raw
+-- observed data (keyframe timestamp or damage-hit timestamp).
+--
+-- Architecture note:
+--   The AnimatorDefender already compensates for ping via its `offset` field
+--   (set to `rdelay()` at init).  DynamicTiming's job is orthogonal: it
+--   subtracts projectile travel-time from the raw `_when` so that stored
+--   timings fire BEFORE the projectile arrives, not at impact.
+--
+--   For melee attacks the travel speed is effectively instant, so the
+--   dictionary value should be a large number (e.g. 999) to make
+--   travelTimeMs negligible.
+--
+-- Usage (inside AnimationLogger.generateTiming):
+--   local adjMs = DynamicTiming.adjust(rawWhenMs, distanceStuds, aid, nil)
+--   action._when = adjMs
+local DynamicTiming = {}
+
+-- Default fallback attack speed (studs / second).
+-- Applies when no dictionary entry exists and no projectile part is supplied.
+DynamicTiming.defaultSpeed = 40
+
+-- Per-animation-ID attack speed overrides.  Keys are full rbxassetid:// strings.
+-- Melee attacks should use a very large value so travel time is ~0.
+-- Projectiles should use their actual stud/s travel speed.
+local attackSpeedDictionary = {}
+
+---Resolve the attack speed for a given animation ID and optional projectile part.
+---@param aid string Full animation asset ID (e.g. "rbxassetid://123456").
+---@param projectilePart BasePart? If the attack spawns a moving part, pass it here.
+---@return number studs per second
+local function resolveSpeed(aid, projectilePart)
+	-- 1. Try live physics velocity from the projectile part.
+	if projectilePart and projectilePart:IsA("BasePart") then
+		local speed = projectilePart.AssemblyLinearVelocity.Magnitude
+		if speed > 0.1 then
+			return speed
+		end
+		-- Velocity was zero (anchored / not yet moving). Fall through.
+	end
+
+	-- 2. Dictionary lookup.
+	local dictSpeed = attackSpeedDictionary[aid]
+	if dictSpeed and dictSpeed > 0 then
+		return dictSpeed
+	end
+
+	-- 3. Global default.
+	return DynamicTiming.defaultSpeed
+end
+
+---Adjust a raw observed `_when` value (in milliseconds) to account for
+---projectile travel time.
+---
+---Formula:
+---  adjustedMs = rawWhenMs - (distanceStuds / attackSpeed) * 1000
+---
+---A negative result is clamped to 0 (fire as soon as animation plays).
+---
+---@param rawWhenMs number Raw `_when` in milliseconds (from damage-hit or keyframe).
+---@param distanceStuds number Distance from attacker to defender at the time of
+---                             capture, in studs.
+---@param aid string Full animation asset ID string.
+---@param projectilePart BasePart? Optional live projectile BasePart.
+---@return number adjustedMs Adjusted `_when` in milliseconds, >= 0.
+function DynamicTiming.adjust(rawWhenMs, distanceStuds, aid, projectilePart)
+	local speed = resolveSpeed(aid, projectilePart)
+
+	-- Time (seconds) for the attack to travel from attacker to defender.
+	local travelTimeMs = (distanceStuds / speed) * 1000
+
+	local adjusted = rawWhenMs - travelTimeMs
+
+	return math.max(adjusted, 0)
+end
+
+---Set the attack speed for a specific animation ID.
+---@param aid string Full animation asset ID string.
+---@param speed number studs per second (use 999 for instant/melee).
+function DynamicTiming.setSpeed(aid, speed)
+	attackSpeedDictionary[aid] = speed
+end
+
+---Get the stored attack speed for a specific animation ID.
+---Returns nil if no entry exists (defaultSpeed will be used at adjust-time).
+---@param aid string
+---@return number?
+function DynamicTiming.getSpeed(aid)
+	return attackSpeedDictionary[aid]
+end
+
+---Bulk-set speeds from a dictionary table { [aid] = speed }.
+---@param dict table<string, number>
+function DynamicTiming.loadSpeeds(dict)
+	for aid, speed in next, dict do
+		attackSpeedDictionary[aid] = speed
+	end
+end
+
+-- Return module.
+return DynamicTiming
 
 end)
 __bundle_register("Utility/ControlModule", function(require, _LOADED, __bundle_register, __bundle_modules)
@@ -18623,6 +18680,9 @@ local AnimationLogger = require("Features/Game/AnimationLogger")
 ---@module Features.Combat.TimingHarvester
 local TimingHarvester = require("Features/Combat/TimingHarvester")
 
+---@module Features.Game.AnimationVisualizer
+local AnimationVisualizer = require("Features/Game/AnimationVisualizer")
+
 ---@module GUI.Library
 local Library = require("GUI/Library")
 
@@ -18959,6 +19019,16 @@ function BuilderTab.initHarvesterSection(groupbox)
 		Text = "Harvested Animations",
 		Values = {},
 		AllowNull = true,
+		Callback = function(value)
+			if not value then
+				return
+			end
+
+			local aid = TimingHarvester.aidFromLabel(value)
+			if aid then
+				AnimationVisualizer.loadId(aid)
+			end
+		end,
 	})
 
 	local harvestedNameInput = groupbox:AddInput("HarvestedTimingName", {
@@ -20971,6 +21041,12 @@ function CombatTab.initAutoDefenseSection(groupbox)
 	autoDefenseDepBox:AddToggle("EnableNotifications", {
 		Text = "Enable Notifications",
 		Default = false,
+	})
+
+	autoDefenseDepBox:AddToggle("EnableDefenseDebug", {
+		Text = "Defense Debug Logger",
+		Default = false,
+		Tooltip = "Verbose logging of every decision the auto-defense makes (animation seen, timing lookup, hitbox check, etc).",
 	})
 
 	autoDefenseDepBox:AddToggle("EnableVisualizations", {

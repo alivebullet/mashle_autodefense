@@ -133,6 +133,12 @@ function CombatTab.initAutoDefenseSection(groupbox)
 		Default = false,
 	})
 
+	autoDefenseDepBox:AddToggle("EnableDefenseDebug", {
+		Text = "Defense Debug Logger",
+		Default = false,
+		Tooltip = "Verbose logging of every decision the auto-defense makes (animation seen, timing lookup, hitbox check, etc).",
+	})
+
 	autoDefenseDepBox:AddToggle("EnableVisualizations", {
 		Text = "Enable Visualizations",
 		Default = false,

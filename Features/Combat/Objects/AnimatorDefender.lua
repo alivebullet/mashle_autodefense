@@ -212,7 +212,12 @@ end)
 ---@param action Action
 ---@return boolean
 AnimatorDefender.valid = LPH_NO_VIRTUALIZE(function(self, timing, action)
+	local dbg = Configuration.expectToggleValue("EnableDefenseDebug")
+
 	if not Defender.valid(self, timing, action) then
+		if dbg then
+			Logger.warn("[DefDbg] Defender.valid() base check FAILED for '%s'.", PP_SCRAMBLE_STR(timing.name))
+		end
 		return false
 	end
 
@@ -226,6 +231,10 @@ AnimatorDefender.valid = LPH_NO_VIRTUALIZE(function(self, timing, action)
 
 	local target = self:target(self.entity)
 	if not target then
+		if dbg then
+			Logger.warn("[DefDbg] Targeting.find() returned nil for '%s'. Entity may not be in workspace.Entities, IgnoreMobs may be on, or distance/FOV limits exceeded.",
+				self.entity.Name)
+		end
 		return self:notify(timing, "Not a viable target.")
 	end
 
@@ -235,6 +244,9 @@ AnimatorDefender.valid = LPH_NO_VIRTUALIZE(function(self, timing, action)
 	end
 
 	if self:stopped(self.track, timing) then
+		if dbg then
+			Logger.warn("[DefDbg] Track stopped for '%s'.", PP_SCRAMBLE_STR(timing.name))
+		end
 		return false
 	end
 
@@ -249,12 +261,23 @@ AnimatorDefender.valid = LPH_NO_VIRTUALIZE(function(self, timing, action)
 
 	local hc = self:hc(options, timing.duih and info or nil)
 	if hc then
+		if dbg then
+			Logger.warn("[DefDbg] Hitbox check PASSED for '%s'.", PP_SCRAMBLE_STR(timing.name))
+		end
 		return true
 	end
 
 	local pc = self:fpc(timing, options)
 	if pc then
+		if dbg then
+			Logger.warn("[DefDbg] Facing prediction check PASSED for '%s'.", PP_SCRAMBLE_STR(timing.name))
+		end
 		return true
+	end
+
+	if dbg then
+		Logger.warn("[DefDbg] HITBOX MISS for '%s' (dist=%.1f, hitbox=%s).",
+			PP_SCRAMBLE_STR(timing.name), self:distance(self.entity) or -1, tostring(timing.hitbox))
 	end
 
 	return self:notify(timing, "Not in hitbox.")
@@ -405,11 +428,16 @@ end
 ---@param self AnimatorDefender
 ---@param track AnimationTrack
 AnimatorDefender.process = LPH_NO_VIRTUALIZE(function(self, track)
+	local dbg = Configuration.expectToggleValue("EnableDefenseDebug")
+
 	if players.LocalPlayer.Character and self.entity == players.LocalPlayer.Character then
 		return
 	end
 
 	if not self:pvalidate(track) then
+		if dbg then
+			Logger.warn("[DefDbg] Skipped track (pvalidate false): priority=%s", tostring(track.Priority))
+		end
 		return
 	end
 
@@ -423,9 +451,14 @@ AnimatorDefender.process = LPH_NO_VIRTUALIZE(function(self, track)
 
 	-- Animation ID.
 	local aid = tostring(track.Animation.AnimationId)
+	local distance = self:distance(self.entity)
+
+	if dbg then
+		Logger.warn("[DefDbg] AnimPlayed entity='%s' aid=%s dist=%.1f spd=%.2f len=%.3f",
+			self.entity.Name, aid, distance or -1, track.Speed, track.Length)
+	end
 
 	-- In logging range? 0 on max = no upper bound (matches AnimationLogger semantics).
-	local distance = self:distance(self.entity)
 	local minDist = Configuration.expectOptionValue("MinimumLoggerDistance") or 0
 	local maxDist = Configuration.expectOptionValue("MaximumLoggerDistance") or 0
 	local ilr = distance and distance >= minDist and (maxDist <= 0 or distance <= maxDist)
@@ -444,7 +477,17 @@ AnimatorDefender.process = LPH_NO_VIRTUALIZE(function(self, track)
 	---@type AnimationTiming?
 	local timing = self:initial(self.entity, SaveManager.as, self.entity.Name, aid)
 	if not timing then
+		if dbg then
+			Logger.warn("[DefDbg] No timing found for aid=%s (entity='%s', dist=%.1f). Miss logged.",
+				aid, self.entity.Name, distance or -1)
+		end
 		return
+	end
+
+	if dbg then
+		Logger.warn("[DefDbg] Timing matched: '%s' (actions=%d, imdd=%d, imxd=%d)",
+			PP_SCRAMBLE_STR(timing.name), timing.actions:count(),
+			PP_SCRAMBLE_NUM(timing.imdd), PP_SCRAMBLE_NUM(timing.imxd))
 	end
 
 	if ilr then
@@ -452,11 +495,17 @@ AnimatorDefender.process = LPH_NO_VIRTUALIZE(function(self, track)
 	end
 
 	if not Configuration.expectToggleValue("EnableAutoDefense") then
+		if dbg then
+			Logger.warn("[DefDbg] Auto-defense is DISABLED. Skipping action scheduling.")
+		end
 		return
 	end
 
 	local humanoidRootPart = self.entity:FindFirstChild("HumanoidRootPart")
 	if not humanoidRootPart then
+		if dbg then
+			Logger.warn("[DefDbg] Entity '%s' has no HumanoidRootPart.", self.entity.Name)
+		end
 		return
 	end
 

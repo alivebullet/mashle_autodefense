@@ -34,6 +34,12 @@ local AnimationLogger = require("Features/Game/AnimationLogger")
 ---@module Features.Combat.TimingHarvester
 local TimingHarvester = require("Features/Combat/TimingHarvester")
 
+---@module Features.Combat.Defense
+local Defense = require("Features/Combat/Defense")
+
+---@module Features.Combat.AttributeListener
+local AttributeListener = require("Features/Combat/AttributeListener")
+
 ---@module Utility.PersistentData
 local PersistentData = require("Utility/PersistentData")
 
@@ -130,7 +136,9 @@ queuedChunk()
 		safeCall("SaveManager.init", SaveManager.init)
 		safeCall("Menu.init", Menu.init)
 		safeCall("AnimationLogger.init", AnimationLogger.init)
+		safeCall("AttributeListener.init", AttributeListener.init)
 		safeCall("TimingHarvester.init", TimingHarvester.init)
+		safeCall("Defense.init", Defense.init)
 		return Logger.notify("Compatibility UI mode is active in %ims.", (os.clock() - startTimestamp) * 1000)
 	end
 
