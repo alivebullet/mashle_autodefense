@@ -202,15 +202,11 @@ Defender.valid = LPH_NO_VIRTUALIZE(function(self, timing, action)
 		return self:notify(timing, "User was knocked recently.")
 	end
 
-	if selectedFilters["Disable When In Dash"] and character:GetAttribute("CurrentState") == "Dashing" then
+	if selectedFilters["Disable When In Dash"] and AttributeListener.cs("DashDodge") then
 		return self:notify(timing, "User is dashing.")
 	end
 
-	if selectedFilters["Disable When In Flashstep"] and character:GetAttribute("CurrentState") == "Flashstep" then
-		return self:notify(timing, "User is flashstepping.")
-	end
-
-	if character:GetAttribute("CurrentState") == "Attacking" or character:GetAttribute("CurrentState") == "Skill" then
+	if AttributeListener.cs("Attacking") or AttributeListener.cs("Charging") then
 		return self:notify(timing, "Currently attacking.")
 	end
 

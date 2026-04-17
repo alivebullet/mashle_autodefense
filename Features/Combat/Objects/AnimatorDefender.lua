@@ -185,8 +185,9 @@ end)
 ---@param timing AnimationTiming
 ---@return number
 AnimatorDefender.fsecs = LPH_NO_VIRTUALIZE(function(self, timing)
-	local player = players:GetPlayerFromCharacter(self.entity)
-	local sd = (player and player:GetAttribute("AveragePing") or 50.0) / 2000
+	-- Mashle doesn't expose a per-player ping attribute. Approximate the attacker's
+	-- sending delay with our local RTT/2; it's imperfect but avoids a hardcoded 25ms.
+	local sd = Defender.rtt() / 2
 	return (timing.pfht or 0.15) + (sd + Defender.rdelay())
 end)
 

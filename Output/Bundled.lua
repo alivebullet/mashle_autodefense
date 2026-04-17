@@ -9516,7 +9516,6 @@ local Defense = {}
 
 -- Services.
 local players = game:GetService("Players")
-local replicatedStorage = game:GetService("ReplicatedStorage")
 local runService = game:GetService("RunService")
 local tweenService = game:GetService("TweenService")
 
@@ -9725,39 +9724,6 @@ local updateVisualizations = LPH_NO_VIRTUALIZE(function()
 	end
 end)
 
----On quick client effect.
-local onQuickClientEffect = LPH_NO_VIRTUALIZE(function(_, _, skillData, _)
-	if not skillData or skillData.Skill ~= "TimingPrompt" then
-		return
-	end
-
-	if not Configuration.expectToggleValue("AutoTimingPrompt") then
-		return
-	end
-
-	local character = players.LocalPlayer.Character
-	if not character then
-		return
-	end
-
-	local characterHandler = character:FindFirstChild("CharacterHandler")
-	if not characterHandler then
-		return
-	end
-
-	local remotes = characterHandler:FindFirstChild("Remotes")
-	if not remotes then
-		return
-	end
-
-	local m2Remote = remotes:FindFirstChild("M2")
-	if not m2Remote then
-		return
-	end
-
-	m2Remote:FireServer()
-end)
-
 ---Update assistance.
 local updateAssistance = LPH_NO_VIRTUALIZE(function()
 	local localPlayer = players.LocalPlayer
@@ -9934,17 +9900,12 @@ end)
 
 ---Initialize defense.
 function Defense.init()
-	-- Instances.
-	local remotes = replicatedStorage:WaitForChild("Remotes")
-	local quickClientEffects = remotes:WaitForChild("QuickClientEffects")
-
 	-- Signals.
 	local gameDescendantAdded = Signal.new(game.DescendantAdded)
 	local gameDescendantRemoved = Signal.new(game.DescendantRemoving)
 	local renderStepped = Signal.new(runService.RenderStepped)
 	local postSimulation = Signal.new(runService.PostSimulation)
 	local playersAdded = Signal.new(players.PlayerAdded)
-	local quickClientEffectSignal = Signal.new(quickClientEffects.OnClientEvent)
 
 	defenseMaid:mark(gameDescendantAdded:connect("Defense_OnDescendantAdded", onGameDescendantAdded))
 	defenseMaid:mark(gameDescendantRemoved:connect("Defense_OnDescendantRemoved", onGameDescendantRemoved))
@@ -9953,7 +9914,6 @@ function Defense.init()
 	defenseMaid:mark(renderStepped:connect("Defense_UpdateAssistance", updateAssistance))
 	defenseMaid:mark(postSimulation:connect("Defense_UpdateDefenders", updateDefenders))
 	defenseMaid:mark(playersAdded:connect("Defense_OnPlayerAdded", onPlayerAdded))
-	defenseMaid:mark(quickClientEffectSignal:connect("Defense_OnQuickClientEffect", onQuickClientEffect))
 
 	if players.LocalPlayer then
 		onPlayerAdded(players.LocalPlayer)
@@ -10633,10 +10593,6 @@ Defender.valid = LPH_NO_VIRTUALIZE(function(self, timing, action)
 
 	if selectedFilters["Disable When In Dash"] and character:GetAttribute("CurrentState") == "Dashing" then
 		return self:notify(timing, "User is dashing.")
-	end
-
-	if selectedFilters["Disable When In Flashstep"] and character:GetAttribute("CurrentState") == "Flashstep" then
-		return self:notify(timing, "User is flashstepping.")
 	end
 
 	if character:GetAttribute("CurrentState") == "Attacking" or character:GetAttribute("CurrentState") == "Skill" then
@@ -11403,10 +11359,7 @@ local function onCharacterAdded(character)
 				AttributeListener.lastParry = tick()
 			end
 
-			if
-				character:GetAttribute("CurrentState") == "Flashstep"
-				or character:GetAttribute("CurrentState") == "Dashing"
-			then
+			if character:GetAttribute("CurrentState") == "Dashing" then
 				AttributeListener.lastDash = tick()
 			end
 
@@ -11447,8 +11400,7 @@ function AttributeListener.cparry()
 		return false
 	end
 
-	return not AttributeListener.lastParry
-		or tick() - AttributeListener.lastParry >= (character:GetAttribute("ParryCooldown") / 1000)
+	return not AttributeListener.lastParry or tick() - AttributeListener.lastParry >= (2000 / 1000)
 end
 
 ---Can we dash?
@@ -11512,93 +11464,56 @@ function InputClient.deflect()
 	InputClient.block(false)
 end
 
----Block.
+---Block (Mashle). Fires UpdateCharacterState with a boolean Blocking state.
 ---@param state boolean
 function InputClient.block(state)
-	local localPlayer = players.LocalPlayer
-	if not localPlayer then
+	local remotes = replicatedStorage:FindFirstChild("Remotes")
+	local updateCharacterState = remotes and remotes:FindFirstChild("UpdateCharacterState")
+	if not updateCharacterState then
 		return
 	end
 
-	local character = localPlayer.Character
-	if not character then
-		return
-	end
-
-	local characterHandler = character:FindFirstChild("CharacterHandler")
-	if not characterHandler then
-		return
-	end
-
-	local remotes = characterHandler:FindFirstChild("Remotes")
-	local block = remotes and remotes:FindFirstChild("Block")
-	if not block then
-		return
-	end
-
-	block:FireServer(state and "Pressed" or "Released")
+	updateCharacterState:FireServer("Blocking", state)
 end
 
----Dash.
+---Dash (Mashle). Fires RequestModule with direction string and cooldown payload.
+---Note: Mashle appears to infer actual movement from held keys server-side, so a bare
+---remote fire may not produce movement. If dash fallback silently no-ops, either turn
+---off DashOnParryCooldown or add movement-key simulation around this call.
 function InputClient.dash()
-	local localPlayer = players.LocalPlayer
-	if not localPlayer then
+	local remotes = replicatedStorage:FindFirstChild("Remotes")
+	local requestModule = remotes and remotes:FindFirstChild("RequestModule")
+	if not requestModule then
 		return
 	end
 
-	local character = localPlayer.Character
-	if not character then
-		return
+	local directionMap = {
+		W = "GroundForward",
+		A = "GroundLeft",
+		S = "GroundBack",
+		D = "GroundRight",
+	}
+
+	local key = Configuration.expectOptionValue("DefaultDashDirection") or "S"
+	local keys = { "W", "A", "S", "D" }
+
+	if key == "Random" then
+		key = keys[math.random(1, #keys)]
 	end
 
-	local characterHandler = character:FindFirstChild("CharacterHandler")
-	if not characterHandler then
-		return
-	end
-
-	local remotes = characterHandler:FindFirstChild("Remotes")
-	local dash = remotes and remotes:FindFirstChild("Dash")
-	if not dash then
-		return
-	end
-
-	---@todo: Implement later.
-	--[[
-    	local l_l_Parent_0_Attribute_1 = character:GetAttribute("CurrentState")
-        if not v346 then
-            if l_UserInputService_0:IsKeyDown(Enum.KeyCode.LeftShift) or v345 then
-                l_Remotes_0.Flashstep:FireServer("Pressed")
-            elseif l_l_Parent_0_Attribute_1 == "Sprinting" and v46 == "Q" then
-                l_Remotes_0.Flashstep:FireServer("Pressed")
-            end
-        elseif l_l_Parent_0_Attribute_1 == "Sprinting" then
-            l_Remotes_0.Flashstep:FireServer("Pressed")
-        end
-        local v348 = "S"
-        if v345 then
-            v348 = getDirection(l_Parent_0.HumanoidRootPart.CFrame.LookVector)
-        end
-    ]]
-	--
-	local v348 = Configuration.expectOptionValue("DefaultDashDirection") or "S"
-	local directions = { "W", "A", "S", "D" }
-
-	if v348 == "Random" then
-		v348 = directions[math.random(1, #directions)]
-	end
-
-	for _, v350 in ipairs(directions) do
-		local l_status_4, l_result_4 = pcall(function() --[[ Line: 1629 ]]
-			-- upvalues: v350 (copy)
-			return Enum.KeyCode[v350]
+	for _, k in ipairs(keys) do
+		local ok, kc = pcall(function()
+			return Enum.KeyCode[k]
 		end)
 
-		if l_status_4 and l_result_4 and userInputService:IsKeyDown(l_result_4) then
-			v348 = v350
+		if ok and kc and userInputService:IsKeyDown(kc) then
+			key = k
 		end
 	end
 
-	dash:FireServer(v348, nil)
+	local direction = directionMap[key] or "GroundBack"
+
+	requestModule:FireServer("Misc", "Dash", direction, { DashCooldown = 1.75 })
 end
 
 ---Parry. Fires the dedicated Misc/Parry remote in ReplicatedStorage.
@@ -12274,8 +12189,9 @@ end)
 ---@param timing AnimationTiming
 ---@return number
 AnimatorDefender.fsecs = LPH_NO_VIRTUALIZE(function(self, timing)
-	local player = players:GetPlayerFromCharacter(self.entity)
-	local sd = (player and player:GetAttribute("AveragePing") or 50.0) / 2000
+	-- Mashle doesn't expose a per-player ping attribute. Approximate the attacker's
+	-- sending delay with our local RTT/2; it's imperfect but avoids a hardcoded 25ms.
+	local sd = Defender.rtt() / 2
 	return (timing.pfht or 0.15) + (sd + Defender.rdelay())
 end)
 
@@ -20294,7 +20210,6 @@ function CombatTab.initAutoDefenseSection(groupbox)
 			"Disable When Window Not Active",
 			"Disable When Holding Block",
 			"Disable When In Dash",
-			"Disable When In Flashstep",
 			"Disable When Knocked Recently",
 		},
 		Multi = true,
@@ -20326,12 +20241,6 @@ end
 ---Initialize combat assistance section.
 ---@param groupbox table
 function CombatTab.initCombatAssistance(groupbox)
-	groupbox:AddToggle("AutoTimingPrompt", {
-		Text = "Auto Timing Prompt",
-		Default = false,
-		Tooltip = "Automatically perform a timing prompt and M2 for you.",
-	})
-
 	local alToggle = groupbox:AddToggle("AimLock", {
 		Text = "Aim Lock",
 		Default = false,

@@ -18,93 +18,56 @@ function InputClient.deflect()
 	InputClient.block(false)
 end
 
----Block.
+---Block (Mashle). Fires UpdateCharacterState with a boolean Blocking state.
 ---@param state boolean
 function InputClient.block(state)
-	local localPlayer = players.LocalPlayer
-	if not localPlayer then
+	local remotes = replicatedStorage:FindFirstChild("Remotes")
+	local updateCharacterState = remotes and remotes:FindFirstChild("UpdateCharacterState")
+	if not updateCharacterState then
 		return
 	end
 
-	local character = localPlayer.Character
-	if not character then
-		return
-	end
-
-	local characterHandler = character:FindFirstChild("CharacterHandler")
-	if not characterHandler then
-		return
-	end
-
-	local remotes = characterHandler:FindFirstChild("Remotes")
-	local block = remotes and remotes:FindFirstChild("Block")
-	if not block then
-		return
-	end
-
-	block:FireServer(state and "Pressed" or "Released")
+	updateCharacterState:FireServer("Blocking", state)
 end
 
----Dash.
+---Dash (Mashle). Fires RequestModule with direction string and cooldown payload.
+---Note: Mashle appears to infer actual movement from held keys server-side, so a bare
+---remote fire may not produce movement. If dash fallback silently no-ops, either turn
+---off DashOnParryCooldown or add movement-key simulation around this call.
 function InputClient.dash()
-	local localPlayer = players.LocalPlayer
-	if not localPlayer then
+	local remotes = replicatedStorage:FindFirstChild("Remotes")
+	local requestModule = remotes and remotes:FindFirstChild("RequestModule")
+	if not requestModule then
 		return
 	end
 
-	local character = localPlayer.Character
-	if not character then
-		return
+	local directionMap = {
+		W = "GroundForward",
+		A = "GroundLeft",
+		S = "GroundBack",
+		D = "GroundRight",
+	}
+
+	local key = Configuration.expectOptionValue("DefaultDashDirection") or "S"
+	local keys = { "W", "A", "S", "D" }
+
+	if key == "Random" then
+		key = keys[math.random(1, #keys)]
 	end
 
-	local characterHandler = character:FindFirstChild("CharacterHandler")
-	if not characterHandler then
-		return
-	end
-
-	local remotes = characterHandler:FindFirstChild("Remotes")
-	local dash = remotes and remotes:FindFirstChild("Dash")
-	if not dash then
-		return
-	end
-
-	---@todo: Implement later.
-	--[[
-    	local l_l_Parent_0_Attribute_1 = character:GetAttribute("CurrentState")
-        if not v346 then
-            if l_UserInputService_0:IsKeyDown(Enum.KeyCode.LeftShift) or v345 then
-                l_Remotes_0.Flashstep:FireServer("Pressed")
-            elseif l_l_Parent_0_Attribute_1 == "Sprinting" and v46 == "Q" then
-                l_Remotes_0.Flashstep:FireServer("Pressed")
-            end
-        elseif l_l_Parent_0_Attribute_1 == "Sprinting" then
-            l_Remotes_0.Flashstep:FireServer("Pressed")
-        end
-        local v348 = "S"
-        if v345 then
-            v348 = getDirection(l_Parent_0.HumanoidRootPart.CFrame.LookVector)
-        end
-    ]]
-	--
-	local v348 = Configuration.expectOptionValue("DefaultDashDirection") or "S"
-	local directions = { "W", "A", "S", "D" }
-
-	if v348 == "Random" then
-		v348 = directions[math.random(1, #directions)]
-	end
-
-	for _, v350 in ipairs(directions) do
-		local l_status_4, l_result_4 = pcall(function() --[[ Line: 1629 ]]
-			-- upvalues: v350 (copy)
-			return Enum.KeyCode[v350]
+	for _, k in ipairs(keys) do
+		local ok, kc = pcall(function()
+			return Enum.KeyCode[k]
 		end)
 
-		if l_status_4 and l_result_4 and userInputService:IsKeyDown(l_result_4) then
-			v348 = v350
+		if ok and kc and userInputService:IsKeyDown(kc) then
+			key = k
 		end
 	end
 
-	dash:FireServer(v348, nil)
+	local direction = directionMap[key] or "GroundBack"
+
+	requestModule:FireServer("Misc", "Dash", direction, { DashCooldown = 1.75 })
 end
 
 ---Parry. Fires the dedicated Misc/Parry remote in ReplicatedStorage.

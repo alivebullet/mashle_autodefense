@@ -10,39 +10,112 @@ local Signal = require("Utility/Signal")
 -- Services.
 local players = game:GetService("Players")
 
--- Attribute maid.
+-- Top-level maid (CharacterAdded / CharacterRemoving signals).
 local attributeMaid = Maid.new()
+
+-- Per-character maid; cleaned on CharacterRemoving. Holds watchers on CharacterState BoolValues.
+local stateMaid = Maid.new()
+
+-- BoolValues under character.CharacterState that we care about. When the .Value flips true,
+-- the paired callback fires. Mashle splits state across many BoolValues instead of using
+-- Type Soul's single CurrentState string attribute.
+local WATCHED = {
+	Parry = function()
+		AttributeListener.lastParry = tick()
+	end,
+	PerfectParry = function()
+		AttributeListener.lastParry = tick()
+	end,
+	DashDodge = function()
+		AttributeListener.lastDash = tick()
+	end,
+	Ragdoll = function()
+		AttributeListener.lastKnock = tick()
+	end,
+	Stun = function()
+		AttributeListener.lastKnock = tick()
+	end,
+}
+
+---Read a CharacterState BoolValue from any character. Returns false when missing.
+---@param character Model?
+---@param name string
+---@return boolean
+function AttributeListener.csOn(character, name)
+	if not character then
+		return false
+	end
+
+	local state = character:FindFirstChild("CharacterState")
+	if not state then
+		return false
+	end
+
+	local bv = state:FindFirstChild(name)
+	if not bv or not bv:IsA("BoolValue") then
+		return false
+	end
+
+	return bv.Value
+end
+
+---Read a CharacterState BoolValue on the local character.
+---@param name string
+---@return boolean
+function AttributeListener.cs(name)
+	local localPlayer = players.LocalPlayer
+	return AttributeListener.csOn(localPlayer and localPlayer.Character, name)
+end
+
+---Hook a BoolValue so true transitions call onTrue.
+---@param bv BoolValue
+---@param onTrue function
+local function watchBool(bv, onTrue)
+	local signal = Signal.new(bv:GetPropertyChangedSignal("Value"))
+	stateMaid:add(signal:connect("AttributeListener_CSValue_" .. bv.Name, function()
+		if bv.Value then
+			onTrue()
+		end
+	end))
+end
+
+---Attach watchers to every BoolValue we care about under a CharacterState folder, and handle
+---late-added ones via ChildAdded.
+---@param characterState Instance
+local function attachStateWatches(characterState)
+	for name, onTrue in pairs(WATCHED) do
+		local bv = characterState:FindFirstChild(name)
+		if bv and bv:IsA("BoolValue") then
+			watchBool(bv, onTrue)
+		end
+	end
+
+	local childAdded = Signal.new(characterState.ChildAdded)
+	stateMaid:add(childAdded:connect("AttributeListener_OnCSChildAdded", function(child)
+		local onTrue = WATCHED[child.Name]
+		if onTrue and child:IsA("BoolValue") then
+			watchBool(child, onTrue)
+		end
+	end))
+end
 
 ---On character added.
 ---@param character Model
 local function onCharacterAdded(character)
-	local attributeChangedSignal = Signal.new(character:GetAttributeChangedSignal("CurrentState"))
+	stateMaid:clean()
 
-	attributeMaid["CurrentStateAttributeChanged"] = attributeChangedSignal:connect(
-		"AttributeListener_OnAttributeChanged",
-		function()
-			if character:GetAttribute("CurrentState") == "Parrying" then
-				AttributeListener.lastParry = tick()
-			end
-
-			if
-				character:GetAttribute("CurrentState") == "Flashstep"
-				or character:GetAttribute("CurrentState") == "Dashing"
-			then
-				AttributeListener.lastDash = tick()
-			end
-
-			if character:GetAttribute("CurrentState") == "Unconscious" then
-				AttributeListener.lastKnock = tick()
-			end
+	task.spawn(function()
+		local cs = character:WaitForChild("CharacterState", 10)
+		if cs then
+			attachStateWatches(cs)
 		end
-	)
+	end)
 end
 
 ---On character removing.
 ---@param character Model
 local function onCharacterRemoving(character)
-	attributeMaid["CurrentStateAttributeChanged"] = nil
+	stateMaid:clean()
 	AttributeListener.lastParry = nil
 	AttributeListener.lastDash = nil
 	AttributeListener.lastKnock = nil
@@ -69,8 +142,7 @@ function AttributeListener.cparry()
 		return false
 	end
 
-	return not AttributeListener.lastParry
-		or tick() - AttributeListener.lastParry >= (character:GetAttribute("ParryCooldown") / 1000)
+	return not AttributeListener.lastParry or tick() - AttributeListener.lastParry >= (2000 / 1000)
 end
 
 ---Can we dash?
@@ -106,6 +178,7 @@ end
 
 ---Detach AttributeListener module.
 function AttributeListener.detach()
+	stateMaid:clean()
 	attributeMaid:clean()
 end
 
