@@ -17,6 +17,9 @@ local Signal = require("Utility/Signal")
 ---@module Features.Combat.TimingHarvester
 local TimingHarvester = require("Features/Combat/TimingHarvester")
 
+---@module Features.Combat.ParryCooldownProbe
+local ParryCooldownProbe = require("Features/Combat/ParryCooldownProbe")
+
 ---@module Utility.Configuration
 local Configuration = require("Utility/Configuration")
 
@@ -50,11 +53,13 @@ local WATCHED = {
 	Parry = function()
 		AttributeListener.lastParry = nil
 		AttributeListener.lastParrySuccess = tick()
+		ParryCooldownProbe.onParryResult("Parry")
 		TimingHarvester.onParryResult(false)
 	end,
 	PerfectParry = function()
 		AttributeListener.lastParry = nil
 		AttributeListener.lastParrySuccess = tick()
+		ParryCooldownProbe.onParryResult("PerfectParry")
 		TimingHarvester.onParryResult(true)
 	end,
 	DashDodge = function()
@@ -95,6 +100,7 @@ function AttributeListener.markParryAttempt()
 	local now = tick()
 	local parryCooldownS = parryCooldownSeconds()
 	AttributeListener.lastParryAttempt = now
+	ParryCooldownProbe.onParryAttempt("script")
 
 	-- Do not extend the synthetic cooldown when we are already locked out. That makes
 	-- repeated checks drift farther away from the real game cooldown.
@@ -107,6 +113,7 @@ end
 function AttributeListener.clearParryCooldown()
 	AttributeListener.lastParry = nil
 	AttributeListener.lastParrySuccess = tick()
+	ParryCooldownProbe.onParryResult("ParryEffect")
 end
 
 ---Read a CharacterState BoolValue on the local character.

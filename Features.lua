@@ -22,6 +22,9 @@ local AnimationLogger = require("Features/Game/AnimationLogger")
 ---@modules Features.Combat.AttributeListener
 local AttributeListener = require("Features/Combat/AttributeListener")
 
+---@module Features.Combat.ParryCooldownProbe
+local ParryCooldownProbe = require("Features/Combat/ParryCooldownProbe")
+
 ---@module Features.Combat.TimingHarvester
 local TimingHarvester = require("Features/Combat/TimingHarvester")
 
@@ -44,6 +47,7 @@ local Input = require("Features/Automation/Input")
 ---@note: Careful with features that have entire return LPH_NO_VIRTUALIZE(function() blocks. We assume that we don't care about what's placed in there.
 function Features.init()
 	Monitoring.init()
+	ParryCooldownProbe.init()
 	AttributeListener.init()
 	TimingHarvester.init()
 	Defense.init()
@@ -65,6 +69,7 @@ function Features.detach()
 	AnimationLogger.detach()
 
 	Monitoring.detach()
+	ParryCooldownProbe.detach()
 	AttributeListener.detach()
 	TimingHarvester.detach()
 	Defense.detach()
