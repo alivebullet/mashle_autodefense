@@ -75,10 +75,11 @@ function Defender:miss(type, key, name, distance, parent)
 		return false
 	end
 
-	if
-		distance < (Configuration.expectOptionValue("MinimumLoggerDistance") or 0)
-		or distance > (Configuration.expectOptionValue("MaximumLoggerDistance") or 0)
-	then
+	-- 0 on max = no upper bound (matches AnimationLogger semantics).
+	local minDist = Configuration.expectOptionValue("MinimumLoggerDistance") or 0
+	local maxDist = Configuration.expectOptionValue("MaximumLoggerDistance") or 0
+
+	if distance < minDist or (maxDist > 0 and distance > maxDist) then
 		return false
 	end
 
