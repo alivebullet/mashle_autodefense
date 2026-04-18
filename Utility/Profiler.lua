@@ -3,21 +3,16 @@ return LPH_NO_VIRTUALIZE(function()
 	-- Determine what parts of our script are lagging us through the microprofiler.
 	local Profiler = {}
 
+	-- Microprofiler scopes in Roblox close at thread yields. Many of our wrapped
+	-- functions yield (signal handlers that fire remotes, deflect() using task.wait,
+	-- etc.), which caused a warning flood from debug.profileend(). We keep the
+	-- label-based entry points as passthroughs so call sites stay unchanged.
+
 	---Runs a function with a specified profiler label.
 	---@param label string
 	---@param functionToProfile function
 	function Profiler.run(label, functionToProfile, ...)
-		-- Profile under label.
-		debug.profilebegin(label)
-
-		-- Call function to profile.
-		local ret_values = table.pack(functionToProfile(...))
-
-		-- End most recent profiling.
-		debug.profileend()
-
-		-- Return values.
-		return unpack(ret_values)
+		return functionToProfile(...)
 	end
 
 	---Wrap function in a profiler statement with label.
@@ -25,9 +20,7 @@ return LPH_NO_VIRTUALIZE(function()
 	---@param functionToProfile function
 	---@return function
 	function Profiler.wrap(label, functionToProfile)
-		return function(...)
-			return Profiler.run(label, functionToProfile, ...)
-		end
+		return functionToProfile
 	end
 
 	-- Return profiler module.
