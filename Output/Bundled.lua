@@ -21010,6 +21010,11 @@ return LPH_NO_VIRTUALIZE(function()
 		return string.lower(tostring(value or ""))
 	end
 
+	local function displayGroupName(groupName)
+		local trimmed = type(groupName) == "string" and string.match(groupName, "^%s*(.-)%s*$") or ""
+		return trimmed ~= "" and trimmed or "Unknown Group"
+	end
+
 	local function sortStrings(values)
 		table.sort(values, function(left, right)
 			return lowerKey(left) < lowerKey(right)
@@ -21568,18 +21573,10 @@ return LPH_NO_VIRTUALIZE(function()
 		camera.Parent = viewport
 		viewport.CurrentCamera = camera
 
-		local previewSource = nil
-		for _, timing in ipairs(group.timings) do
-			previewSource = previewSourceForTiming(timing, group.name)
-			if previewSource then
-				break
-			end
-		end
-
-		if not fillViewport(viewport, worldModel, camera, previewSource) then
+		local function addPlaceholder()
 			local placeholder = Instance.new("TextLabel")
 			placeholder.FontFace = TITLE_FONT
-			placeholder.Text = string.sub(group.name ~= "" and group.name or "?", 1, 1)
+			placeholder.Text = string.sub(displayGroupName(group.name), 1, 1)
 			placeholder.TextColor3 = Library.AccentColor
 			placeholder.BackgroundTransparency = 1
 			placeholder.Size = UDim2.new(1, 0, 1, 0)
@@ -21591,6 +21588,25 @@ return LPH_NO_VIRTUALIZE(function()
 			})
 		end
 
+		local ok, rendered = pcall(function()
+			local previewSource = nil
+			for _, timing in ipairs(group.timings) do
+				previewSource = previewSourceForTiming(timing, group.name)
+				if previewSource then
+					break
+				end
+			end
+
+			return fillViewport(viewport, worldModel, camera, previewSource)
+		end)
+
+		if not ok or not rendered then
+			for _, child in ipairs(worldModel:GetChildren()) do
+				child:Destroy()
+			end
+			addPlaceholder()
+		end
+
 		return viewport
 	end
 
@@ -21599,6 +21615,7 @@ return LPH_NO_VIRTUALIZE(function()
 		npcCountLabel.Text = string.format("NPC Groups: %d", #groupedNpcList)
 
 		for index, group in ipairs(groupedNpcList) do
+			local groupDisplayName = displayGroupName(group.name)
 			local entry = Instance.new("TextButton")
 			entry.AutoButtonColor = false
 			entry.Text = ""
@@ -21615,7 +21632,7 @@ return LPH_NO_VIRTUALIZE(function()
 			local nameLabel = Instance.new("TextLabel")
 			nameLabel.FontFace = FONT
 			nameLabel.TextColor3 = Library.FontColor
-			nameLabel.Text = group.name
+			nameLabel.Text = groupDisplayName
 			nameLabel.BackgroundTransparency = 1
 			nameLabel.Position = UDim2.new(0, 70, 0, 9)
 			nameLabel.Size = UDim2.new(1, -78, 0, 18)
