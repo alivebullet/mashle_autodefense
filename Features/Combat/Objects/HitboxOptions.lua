@@ -76,7 +76,31 @@ function HitboxOptions:hitboxOffset()
 	end
 
 	if typeof(hitboxOffset) ~= "Vector3" then
-		return Vector3.zero
+		hitboxOffset = Vector3.zero
+	end
+
+	local offsetWhen = nil
+	if self.action then
+		offsetWhen = type(self.action.tp) == "number" and self.action.tp or nil
+		if offsetWhen == nil and type(self.action.when) == "function" then
+			local ok, value = pcall(self.action.when, self.action)
+			if ok and type(value) == "number" then
+				offsetWhen = value
+			end
+		end
+	end
+
+	if type(offsetWhen) == "number" and self.timing and type(self.timing.id) == "function" then
+		local okId, aid = pcall(self.timing.id, self.timing)
+		if okId and type(aid) == "string" and aid ~= "" then
+			local okHarvester, TimingHarvester = pcall(require, "Features/Combat/TimingHarvester")
+			if okHarvester and type(TimingHarvester) == "table" and type(TimingHarvester.hitboxOffsetAt) == "function" then
+				local dynamicOffset = TimingHarvester.hitboxOffsetAt(aid, offsetWhen, hitboxOffset)
+				if typeof(dynamicOffset) == "Vector3" then
+					hitboxOffset = dynamicOffset
+				end
+			end
+		end
 	end
 
 	return Vector3.new(
@@ -102,7 +126,13 @@ HitboxOptions.extrapolate = LPH_NO_VIRTUALIZE(function(self)
 	end
 
 	-- Return the extrapolated position.
-	return self.part.CFrame + (self.part.AssemblyLinearVelocity * self.ptime)
+	local predicted = self.part.CFrame + (self.part.AssemblyLinearVelocity * self.ptime)
+	local hitboxOffset = self:hitboxOffset()
+	if hitboxOffset.Magnitude > 0 then
+		predicted = predicted * CFrame.new(hitboxOffset)
+	end
+
+	return predicted
 end)
 
 ---Get position.

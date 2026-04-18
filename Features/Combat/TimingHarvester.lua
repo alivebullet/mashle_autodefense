@@ -59,10 +59,16 @@ return LPH_NO_VIRTUALIZE(function()
 	local HITBOX_PAD_WIDTH = 2
 	local HITBOX_PAD_HEIGHT = 2
 	local HITBOX_PAD_DEPTH = 4
-	local HITBOX_MIN_EXTENT = Vector3.new(6, 6, 8)
+	local HITBOX_MIN_EXTENT = Vector3.new(8, 8, 12)
 	local HITBOX_MAX_EXTENT = Vector3.new(40, 30, 50)
 	local MIN_HITBOX_SAMPLES = 3
 	local MAX_PERSISTED_HITBOX_SAMPLES = 96
+	local MIN_HITBOX_SHRINK_SAMPLES = 12
+	local MIN_HITBOX_SHRINK_RECENT_SAMPLES = 6
+	local HITBOX_RECENT_CONFIRMATION_SAMPLES = 8
+	local HITBOX_MOTION_NEIGHBORS = 5
+	local HITBOX_MOTION_WEIGHT_FLOOR = 0.02
+	local HITBOX_SHRINK_TOLERANCE = Vector3.new(0.5, 0.5, 1)
 
 	---Get the display label for an entity inside the harvester.
 	---@param entity Model?
@@ -916,20 +922,144 @@ return LPH_NO_VIRTUALIZE(function()
 		return merged
 	end
 
+	---Return a sample as a Vector3.
+	---@param sample table
+	---@return Vector3
+	local function hitboxSampleVector(sample)
+		return Vector3.new(sample.x or 0, sample.y or 0, sample.z or 0)
+	end
+
+	---Return the component-wise max of two vectors.
+	---@param lhs Vector3
+	---@param rhs Vector3
+	---@return Vector3
+	local function vectorMax(lhs, rhs)
+		return Vector3.new(
+			math.max(lhs.X, rhs.X),
+			math.max(lhs.Y, rhs.Y),
+			math.max(lhs.Z, rhs.Z)
+		)
+	end
+
+	---Clamp hitbox size to configured bounds.
+	---@param size Vector3
+	---@return Vector3
+	local function clampHitboxSize(size)
+		return Vector3.new(
+			math.max(HITBOX_MIN_EXTENT.X, math.min(HITBOX_MAX_EXTENT.X, size.X)),
+			math.max(HITBOX_MIN_EXTENT.Y, math.min(HITBOX_MAX_EXTENT.Y, size.Y)),
+			math.max(HITBOX_MIN_EXTENT.Z, math.min(HITBOX_MAX_EXTENT.Z, size.Z))
+		)
+	end
+
+	---Return a motion-aware hitbox center for a given animation time.
+	---@param samplesIn table[]
+	---@param when number
+	---@return Vector3?
+	local function motionCenterFromSamples(samplesIn, when)
+		if #samplesIn == 0 or type(when) ~= "number" then
+			return nil
+		end
+
+		local ranked = {}
+		for _, sample in ipairs(samplesIn) do
+			table.insert(ranked, {
+				sample = sample,
+				delta = math.abs((sample.when or 0) - when),
+			})
+		end
+
+		table.sort(ranked, function(lhs, rhs)
+			if lhs.delta == rhs.delta then
+				return (lhs.sample.t or 0) < (rhs.sample.t or 0)
+			end
+
+			return lhs.delta < rhs.delta
+		end)
+
+		local totalWeight, weighted = 0, Vector3.zero
+		for index = 1, math.min(#ranked, HITBOX_MOTION_NEIGHBORS) do
+			local entry = ranked[index]
+			local weight = 1 / math.max(HITBOX_MOTION_WEIGHT_FLOOR, entry.delta)
+			weighted = weighted + (hitboxSampleVector(entry.sample) * weight)
+			totalWeight = totalWeight + weight
+		end
+
+		if totalWeight <= 0 then
+			return hitboxSampleVector(ranked[1].sample)
+		end
+
+		return weighted / totalWeight
+	end
+
+	---Return the most recent hitbox samples up to the requested count.
+	---@param samplesIn table[]
+	---@param count number
+	---@return table[]
+	local function recentHitboxSamples(samplesIn, count)
+		local out = {}
+		local startIndex = math.max(1, #samplesIn - count + 1)
+
+		for index = startIndex, #samplesIn do
+			out[#out + 1] = samplesIn[index]
+		end
+
+		return out
+	end
+
+	---Return the exact hitbox size required to contain the supplied damage samples.
+	---@param samplesIn table[]
+	---@param fallbackCenter Vector3?
+	---@return Vector3?
+	local function requiredHitboxSize(samplesIn, fallbackCenter)
+		if #samplesIn == 0 then
+			return nil
+		end
+
+		local halfX, halfY, halfZ = 0, 0, 0
+		for _, sample in ipairs(samplesIn) do
+			local center = motionCenterFromSamples(samplesIn, sample.when or 0) or fallbackCenter or Vector3.zero
+			local point = hitboxSampleVector(sample)
+			local residual = point - center
+
+			halfX = math.max(halfX, math.abs(residual.X))
+			halfY = math.max(halfY, math.abs(residual.Y))
+			halfZ = math.max(halfZ, math.abs(residual.Z))
+		end
+
+		return clampHitboxSize(Vector3.new(
+			halfX * 2 + HITBOX_PAD_WIDTH,
+			halfY * 2 + HITBOX_PAD_HEIGHT,
+			halfZ * 2 + HITBOX_PAD_DEPTH
+		))
+	end
+
 	---Solve a signed hitbox size and center offset from attacker-local damage samples.
 	---@param samplesIn table[]
-	---@return Vector3?, Vector3?, number
+	---@return Vector3?, Vector3?, number, Vector3?, number
 	local function solveHitboxShape(samplesIn)
 		local sampleCount = #samplesIn
 		if sampleCount < MIN_HITBOX_SAMPLES then
-			return nil, nil, sampleCount
+			return nil, nil, sampleCount, nil, 0
 		end
 
-		local xs, ys, zs = {}, {}, {}
+		local whens, xs, ys, zs = {}, {}, {}, {}
 		for _, sample in ipairs(samplesIn) do
-			table.insert(xs, sample.x)
-			table.insert(ys, sample.y)
-			table.insert(zs, sample.z)
+			whens[#whens + 1] = sample.when or 0
+		end
+
+		local baseWhen = median(whens) or 0
+		local baseCenter = motionCenterFromSamples(samplesIn, baseWhen) or Vector3.zero
+		local recentSamples = recentHitboxSamples(samplesIn, HITBOX_RECENT_CONFIRMATION_SAMPLES)
+		local recentRequired = requiredHitboxSize(recentSamples, baseCenter)
+
+		for _, sample in ipairs(samplesIn) do
+			local center = motionCenterFromSamples(samplesIn, sample.when or baseWhen) or baseCenter
+			local residual = hitboxSampleVector(sample) - center
+
+			table.insert(xs, math.abs(residual.X))
+			table.insert(ys, math.abs(residual.Y))
+			table.insert(zs, math.abs(residual.Z))
 		end
 
 		---@param axisSamples number[]
@@ -948,14 +1078,34 @@ return LPH_NO_VIRTUALIZE(function()
 			if full < minExtent then full = minExtent end
 			if full > maxExtent then full = maxExtent end
 
-			return full, (lo + hi) * 0.5
+			return full, 0
 		end
 
-		local sizeX, centerX = axisShape(xs, HITBOX_PAD_WIDTH, HITBOX_MIN_EXTENT.X, HITBOX_MAX_EXTENT.X)
-		local sizeY, centerY = axisShape(ys, HITBOX_PAD_HEIGHT, HITBOX_MIN_EXTENT.Y, HITBOX_MAX_EXTENT.Y)
-		local sizeZ, centerZ = axisShape(zs, HITBOX_PAD_DEPTH, HITBOX_MIN_EXTENT.Z, HITBOX_MAX_EXTENT.Z)
+		local sizeX = axisShape(xs, HITBOX_PAD_WIDTH, HITBOX_MIN_EXTENT.X, HITBOX_MAX_EXTENT.X)
+		local sizeY = axisShape(ys, HITBOX_PAD_HEIGHT, HITBOX_MIN_EXTENT.Y, HITBOX_MAX_EXTENT.Y)
+		local sizeZ = axisShape(zs, HITBOX_PAD_DEPTH, HITBOX_MIN_EXTENT.Z, HITBOX_MAX_EXTENT.Z)
+		local candidateSize = clampHitboxSize(Vector3.new(sizeX, sizeY, sizeZ))
+		local safeSize = recentRequired and vectorMax(candidateSize, recentRequired) or candidateSize
 
-		return Vector3.new(sizeX, sizeY, sizeZ), Vector3.new(centerX, centerY, centerZ), sampleCount
+		return safeSize, baseCenter, sampleCount, recentRequired, #recentSamples
+	end
+
+	---Return a motion-aware hitbox center for the given animation time.
+	---@param aid string
+	---@param when number
+	---@param fallback Vector3?
+	---@return Vector3?
+	function TimingHarvester.hitboxOffsetAt(aid, when, fallback)
+		if type(aid) ~= "string" or aid == "" or type(when) ~= "number" then
+			return fallback
+		end
+
+		local mergedSamples = mergedHitboxSamples(aid, samples[aid])
+		if #mergedSamples < MIN_HITBOX_SAMPLES then
+			return fallback
+		end
+
+		return motionCenterFromSamples(mergedSamples, when) or fallback
 	end
 
 	---Pick a slightly early timing inside a solved success window.
@@ -1018,7 +1168,7 @@ return LPH_NO_VIRTUALIZE(function()
 		local hitLo = percentile(hitWhens, 0.1)
 		local hitHi = percentile(hitWhens, 0.9)
 		local learnedSamples = mergedHitboxSamples(aid, b)
-		local hitbox, hitboxOffset, hitboxSamples = solveHitboxShape(learnedSamples)
+		local hitbox, hitboxOffset, hitboxSamples, hitboxRecentRequired, hitboxRecentSampleCount = solveHitboxShape(learnedSamples)
 
 		-- Mashle parry becomes active slightly before impact, so midpoint timings trend late.
 		-- Bias harvested timings toward the early side of successful parry samples.
@@ -1038,6 +1188,8 @@ return LPH_NO_VIRTUALIZE(function()
 				hitbox = hitbox,
 				hitboxOffset = hitboxOffset,
 				hitboxSamples = hitboxSamples,
+				hitboxRecentRequired = hitboxRecentRequired,
+				hitboxRecentSampleCount = hitboxRecentSampleCount,
 				bestWhen = nil,
 			}
 		end
@@ -1079,6 +1231,8 @@ return LPH_NO_VIRTUALIZE(function()
 			hitbox = hitbox,
 			hitboxOffset = hitboxOffset,
 			hitboxSamples = hitboxSamples,
+			hitboxRecentRequired = hitboxRecentRequired,
+			hitboxRecentSampleCount = hitboxRecentSampleCount,
 			-- Confidence scales with successful parry count.
 			confidence = math.min(1.0, (#perfectWhens + #parryWhens) / 8),
 		}
@@ -1199,13 +1353,40 @@ return LPH_NO_VIRTUALIZE(function()
 		local defaultHitbox = Vector3.new(20, 20, 30)
 		local learnedHitbox = solved.hitbox
 		local learnedHitboxOffset = solved.hitboxOffset
+		local recentRequired = typeof(solved.hitboxRecentRequired) == "Vector3" and solved.hitboxRecentRequired or learnedHitbox
+
+		local function chooseAxis(currentValue, proposedValue, recentValue, tolerance, shrinkReady)
+			if recentValue > currentValue + tolerance then
+				return math.max(proposedValue, recentValue)
+			end
+
+			if proposedValue < currentValue - tolerance then
+				return shrinkReady and proposedValue or currentValue
+			end
+
+			return proposedValue
+		end
+
+		local function choosePromotedHitbox(current)
+			local proposed = typeof(learnedHitbox) == "Vector3" and learnedHitbox or current or defaultHitbox
+			local currentBox = typeof(current) == "Vector3" and current or defaultHitbox
+			local recentBox = typeof(recentRequired) == "Vector3" and recentRequired or proposed
+			local shrinkReady = (solved.hitboxSamples or 0) >= MIN_HITBOX_SHRINK_SAMPLES
+				and (solved.hitboxRecentSampleCount or 0) >= MIN_HITBOX_SHRINK_RECENT_SAMPLES
+
+			return Vector3.new(
+				chooseAxis(currentBox.X, proposed.X, recentBox.X, HITBOX_SHRINK_TOLERANCE.X, shrinkReady),
+				chooseAxis(currentBox.Y, proposed.Y, recentBox.Y, HITBOX_SHRINK_TOLERANCE.Y, shrinkReady),
+				chooseAxis(currentBox.Z, proposed.Z, recentBox.Z, HITBOX_SHRINK_TOLERANCE.Z, shrinkReady)
+			)
+		end
 
 		local function applyLearnedShape(target)
 			if typeof(learnedHitbox) ~= "Vector3" or typeof(learnedHitboxOffset) ~= "Vector3" then
 				return false
 			end
 
-			target.hitbox = learnedHitbox
+			target.hitbox = choosePromotedHitbox(target.hitbox)
 			target.hitboxOffset = learnedHitboxOffset
 
 			if target.fhb ~= nil then
