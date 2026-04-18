@@ -706,6 +706,8 @@ return LPH_NO_VIRTUALIZE(function()
 		local candidates = {}
 		local seen = {}
 
+		appendPreviewCandidate(candidates, seen, AnimationLogger.getEntityPreviewSource(groupName))
+		appendPreviewCandidate(candidates, seen, AnimationLogger.getEntityPreviewSource(derivedGroupName(timing)))
 		appendPreviewCandidate(candidates, seen, findLiveModel(groupName))
 		appendPreviewCandidate(candidates, seen, findLiveModel(derivedGroupName(timing)))
 

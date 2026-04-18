@@ -47,6 +47,7 @@ return LPH_NO_VIRTUALIZE(function()
 
 	-- Most recent source entity seen for each animation id, used by the visualizer.
 	local previewSources = {}
+	local entityPreviewSources = {}
 
 	-- Animations currently playing on nearby entities (for damage-hit capture).
 	-- Key: animation ID, Value: { track = AnimationTrack, entity = Model }
@@ -58,6 +59,22 @@ return LPH_NO_VIRTUALIZE(function()
 	---@return boolean
 	local function hasRenderablePart(model)
 		return model ~= nil and (model.PrimaryPart ~= nil or model:FindFirstChildWhichIsA("BasePart", true) ~= nil)
+	end
+
+	local function normalizedEntityName(value)
+		return string.lower(tostring(value or "")):gsub("[%W_]+", "")
+	end
+
+	local function rememberEntityPreviewSource(entity)
+		if typeof(entity) ~= "Instance" or not entity:IsA("Model") or not entity.Parent then
+			return
+		end
+
+		if not hasRenderablePart(entity) then
+			return
+		end
+
+		entityPreviewSources[entity.Name] = entity
 	end
 
 	---Get distance from local player to an entity.
@@ -146,6 +163,8 @@ return LPH_NO_VIRTUALIZE(function()
 		if localChar and entity == localChar then
 			return
 		end
+
+		rememberEntityPreviewSource(entity)
 
 		local animMaid = Maid.new()
 		trackedAnimators[animator] = animMaid
@@ -331,6 +350,46 @@ return LPH_NO_VIRTUALIZE(function()
 		end
 
 		return source
+	end
+
+	---@param entityName string
+	---@return Model?
+	function AnimationLogger.getEntityPreviewSource(entityName)
+		if type(entityName) ~= "string" or #entityName <= 0 then
+			return nil
+		end
+
+		local exact = entityPreviewSources[entityName]
+		if typeof(exact) == "Instance" and exact:IsA("Model") and exact.Parent then
+			return exact
+		end
+
+		if exact ~= nil then
+			entityPreviewSources[entityName] = nil
+		end
+
+		local normalizedWanted = normalizedEntityName(entityName)
+		if normalizedWanted == "" then
+			return nil
+		end
+
+		local partial = nil
+		for name, source in next, entityPreviewSources do
+			if typeof(source) ~= "Instance" or not source:IsA("Model") or not source.Parent then
+				entityPreviewSources[name] = nil
+			else
+				local normalizedSource = normalizedEntityName(name)
+				if normalizedSource == normalizedWanted then
+					return source
+				end
+
+				if not partial and (string.find(normalizedSource, normalizedWanted, 1, true) or string.find(normalizedWanted, normalizedSource, 1, true)) then
+					partial = source
+				end
+			end
+		end
+
+		return partial
 	end
 
 	---Clear all captured animations.
@@ -587,6 +646,7 @@ return LPH_NO_VIRTUALIZE(function()
 
 		trackedAnimators = {}
 		previewSources = {}
+		entityPreviewSources = {}
 		loggerMaid:clean()
 		isInitialized = false
 	end
