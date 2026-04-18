@@ -28,7 +28,7 @@ return LPH_NO_VIRTUALIZE(function()
 	local FONT = Font.new("rbxasset://fonts/families/RobotoMono.json")
 	local TITLE_FONT = Font.new("rbxasset://fonts/families/SourceSansPro.json", Enum.FontWeight.Bold)
 	local PANEL_W = 1080
-	local PANEL_H = 720
+	local PANEL_H = 808
 	local NPC_ENTRY_H = 74
 	local ANIM_ENTRY_H = 58
 	local ACTION_ENTRY_H = 30
