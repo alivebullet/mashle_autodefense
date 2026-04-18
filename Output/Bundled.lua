@@ -20479,7 +20479,7 @@ return LPH_NO_VIRTUALIZE(function()
 
 	local FONT = Font.new("rbxasset://fonts/families/RobotoMono.json")
 	local TITLE_FONT = Font.new("rbxasset://fonts/families/SourceSansPro.json", Enum.FontWeight.Bold)
-	local PANEL_W = 1080
+	local PANEL_W = 1140
 	local PANEL_H = 808
 	local NPC_ENTRY_H = 74
 	local ANIM_ENTRY_H = 58
@@ -21032,6 +21032,15 @@ return LPH_NO_VIRTUALIZE(function()
 		table.insert(names, trimmed)
 	end
 
+	local function timingAid(timing)
+		local aid = timing and timing._id
+		if type(aid) ~= "string" or aid == "" then
+			return nil
+		end
+
+		return aid
+	end
+
 	local function groupNamesForTiming(timing)
 		local names = {}
 		local seen = {}
@@ -21065,15 +21074,6 @@ return LPH_NO_VIRTUALIZE(function()
 		end
 
 		return names
-	end
-
-	local function timingAid(timing)
-		local aid = timing and timing._id
-		if type(aid) ~= "string" or aid == "" then
-			return nil
-		end
-
-		return aid
 	end
 
 	local function findLiveModel(groupName)
