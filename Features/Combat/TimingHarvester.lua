@@ -50,6 +50,14 @@ return LPH_NO_VIRTUALIZE(function()
 	local ATTRIB_MAX_DISTANCE = 60
 	local EARLY_SUCCESS_WINDOW_POSITION = 0.35
 	local HIT_FALLBACK_LEAD_S = 0.05
+	-- Hitbox learning.
+	local HITBOX_AXIS_PERCENTILE = 0.95
+	local HITBOX_PAD_WIDTH = 2
+	local HITBOX_PAD_HEIGHT = 2
+	local HITBOX_PAD_DEPTH = 4
+	local HITBOX_MIN_EXTENT = Vector3.new(6, 6, 8)
+	local HITBOX_MAX_EXTENT = Vector3.new(40, 30, 50)
+	local MIN_HITBOX_SAMPLES = 3
 
 	---Get the display label for an entity inside the harvester.
 	---@param entity Model?
@@ -99,6 +107,29 @@ return LPH_NO_VIRTUALIZE(function()
 		end
 
 		return value
+	end
+
+	---Local-space offset from the attacker's CFrame to the local player's root position.
+	---Negative Z is in front of the attacker; X is right; Y is up.
+	---@param attacker Model?
+	---@return Vector3?
+	local function localOffsetFromAttacker(attacker)
+		if typeof(attacker) ~= "Instance" then
+			return nil
+		end
+
+		local localChar = players.LocalPlayer and players.LocalPlayer.Character
+		if not localChar or not localChar.PrimaryPart then
+			return nil
+		end
+
+		local attackerPart = attacker:IsA("Model") and attacker.PrimaryPart
+			or attacker:FindFirstChildWhichIsA("BasePart", true)
+		if not attackerPart then
+			return nil
+		end
+
+		return attackerPart.CFrame:PointToObjectSpace(localChar.PrimaryPart.Position)
 	end
 
 	---Distance from local player to an entity (nil if unknown).
@@ -235,23 +266,24 @@ return LPH_NO_VIRTUALIZE(function()
 	---@return table?
 	local function pickCandidate(t)
 		local cutoff = t - ANIM_LOOKBACK_S
+		local maxDist = harvesterMaxDistance()
 		local best, bestOffset = nil, math.huge
 
 		for i = #recentAnims, 1, -1 do
 			local a = recentAnims[i]
-			if bannedAnims[a.aid] then
-				continue
-			end
-
 			if a.t0 < cutoff then
 				break
+			end
+
+			if bannedAnims[a.aid] then
+				continue
 			end
 
 			local off = t - a.t0
 			if off >= 0 and off <= MAX_PRESS_OFFSET_S then
 				-- Prefer most recent in-distance animation.
 				local dist = distanceTo(a.entity) or a.distance or math.huge
-				if dist <= ATTRIB_MAX_DISTANCE and off < bestOffset then
+				if dist <= maxDist and off < bestOffset then
 					bestOffset = off
 					best = a
 					best._attribDist = dist
@@ -554,6 +586,7 @@ return LPH_NO_VIRTUALIZE(function()
 			distance = candidate._attribDist,
 			ping = ping,
 			t = now,
+			hitOffset = localOffsetFromAttacker(candidate.entity),
 		})
 
 		if pendingPress then
@@ -587,6 +620,7 @@ return LPH_NO_VIRTUALIZE(function()
 			distance = candidate._attribDist,
 			ping = ping,
 			t = now,
+			hitOffset = localOffsetFromAttacker(candidate.entity),
 		})
 	end
 
@@ -659,6 +693,16 @@ return LPH_NO_VIRTUALIZE(function()
 		end
 
 		local perfectWhens, parryWhens, failWhens, hitWhens, distances, pings = {}, {}, {}, {}, {}, {}
+		local xs, ys, zs = {}, {}, {}
+
+		local function absorbOffset(offset)
+			if typeof(offset) ~= "Vector3" then
+				return
+			end
+			table.insert(xs, math.abs(offset.X))
+			table.insert(ys, math.abs(offset.Y))
+			table.insert(zs, math.abs(offset.Z))
+		end
 
 		for _, s in ipairs(b.pressSamples) do
 			if s.parried then
@@ -666,6 +710,7 @@ return LPH_NO_VIRTUALIZE(function()
 				if s.perfect then
 					table.insert(perfectWhens, s.when)
 				end
+				absorbOffset(s.hitOffset)
 			else
 				table.insert(failWhens, s.when)
 			end
@@ -681,6 +726,7 @@ return LPH_NO_VIRTUALIZE(function()
 
 		for _, s in ipairs(b.hitSamples) do
 			table.insert(hitWhens, s.when)
+			absorbOffset(s.hitOffset)
 			if s.distance then
 				table.insert(distances, s.distance)
 			end
@@ -716,8 +762,37 @@ return LPH_NO_VIRTUALIZE(function()
 			}
 		end
 
-		local minDist = #distances > 0 and math.min(table.unpack(distances)) or 0
-		local maxDist = #distances > 0 and math.max(table.unpack(distances)) or 100
+		local minDist, maxDist = 0, 100
+		if #distances > 0 then
+			minDist, maxDist = distances[1], distances[1]
+			for i = 2, #distances do
+				local d = distances[i]
+				if d < minDist then minDist = d end
+				if d > maxDist then maxDist = d end
+			end
+		end
+
+		---@param axisSamples number[]
+		---@param padFull number full-extent pad added after symmetric doubling
+		---@param minExtent number minimum full-extent floor
+		---@param maxExtent number maximum full-extent ceiling
+		---@return number
+		local function axisExtent(axisSamples, padFull, minExtent, maxExtent)
+			local half = percentile(axisSamples, HITBOX_AXIS_PERCENTILE) or 0
+			local full = half * 2 + padFull
+			if full < minExtent then full = minExtent end
+			if full > maxExtent then full = maxExtent end
+			return full
+		end
+
+		local hitbox, hitboxSamples = nil, #xs
+		if hitboxSamples >= MIN_HITBOX_SAMPLES then
+			hitbox = Vector3.new(
+				axisExtent(xs, HITBOX_PAD_WIDTH, HITBOX_MIN_EXTENT.X, HITBOX_MAX_EXTENT.X),
+				axisExtent(ys, HITBOX_PAD_HEIGHT, HITBOX_MIN_EXTENT.Y, HITBOX_MAX_EXTENT.Y),
+				axisExtent(zs, HITBOX_PAD_DEPTH, HITBOX_MIN_EXTENT.Z, HITBOX_MAX_EXTENT.Z)
+			)
+		end
 
 		return {
 			aid = aid,
@@ -743,6 +818,8 @@ return LPH_NO_VIRTUALIZE(function()
 			medianPingMs = (median(pings) or 0) * 1000,
 			minDistance = minDist,
 			maxDistance = maxDist,
+			hitbox = hitbox,
+			hitboxSamples = hitboxSamples,
 			-- Confidence scales with successful parry count.
 			confidence = math.min(1.0, (#perfectWhens + #parryWhens) / 8),
 		}
@@ -860,29 +937,53 @@ return LPH_NO_VIRTUALIZE(function()
 		local profilePingMs = math.max(0, math.round(solved.medianPingMs or (rttSeconds() * 1000)))
 		local existingConfig = SaveManager.as.config and SaveManager.as.config.timings[aid]
 
+		local defaultHitbox = Vector3.new(20, 20, 30)
+		local learnedHitbox = solved.hitbox
+		local function expandHitbox(current)
+			if typeof(current) ~= "Vector3" then
+				return learnedHitbox or defaultHitbox
+			end
+			if not learnedHitbox then
+				return current
+			end
+			return Vector3.new(
+				math.max(current.X, learnedHitbox.X),
+				math.max(current.Y, learnedHitbox.Y),
+				math.max(current.Z, learnedHitbox.Z)
+			)
+		end
+
 		if existingConfig then
 			local action = getParryAction(existingConfig)
 			if not action then
 				action = Action.new()
 				action.name = string.format("Action_Harvested_n%d", solved.sampleCount)
 				action._type = "Parry"
-				action.hitbox = Vector3.new(20, 20, 30)
+				action.hitbox = learnedHitbox or defaultHitbox
 				action.ihbc = false
 				existingConfig.actions:push(action)
+			else
+				action.hitbox = expandHitbox(action.hitbox)
 			end
 
 			action._when = PP_SCRAMBLE_RE_NUM(whenMs)
 			action:addPingProfile(profilePingMs, whenMs, solved.sampleCount)
 
+			existingConfig.hitbox = expandHitbox(existingConfig.hitbox)
 			existingConfig.imdd = math.max(0, math.min(existingConfig.imdd or solved.minDistance, solved.minDistance))
 			existingConfig.imxd = math.max(existingConfig.imxd or solved.maxDistance, solved.maxDistance)
 
+			local hb = existingConfig.hitbox
 			Logger.notify(
-				"[Harvester] Updated '%s' with %.0fms @ %dms RTT (%d profiles).",
+				"[Harvester] Updated '%s' with %.0fms @ %dms RTT (%d profiles) hitbox=(%.1f, %.1f, %.1f) from %d pts.",
 				existingConfig.name,
 				solved.bestWhen * 1000,
 				profilePingMs,
-				#(action.pingProfiles or {})
+				#(action.pingProfiles or {}),
+				(typeof(hb) == "Vector3" and hb.X) or 0,
+				(typeof(hb) == "Vector3" and hb.Y) or 0,
+				(typeof(hb) == "Vector3" and hb.Z) or 0,
+				solved.hitboxSamples or 0
 			)
 
 			return true, existingConfig.name
@@ -905,7 +1006,7 @@ return LPH_NO_VIRTUALIZE(function()
 		timing.tag = "Undefined"
 		timing.imdd = math.max(0, math.floor(solved.minDistance - 2))
 		timing.imxd = math.ceil(solved.maxDistance + 5)
-		timing.hitbox = Vector3.new(20, 20, 30)
+		timing.hitbox = learnedHitbox or defaultHitbox
 		timing.fhb = true
 		timing.pfh = true
 		timing.pfht = 0.15
@@ -914,7 +1015,7 @@ return LPH_NO_VIRTUALIZE(function()
 		action.name = string.format("Action_Harvested_n%d", solved.sampleCount)
 		action._type = "Parry"
 		action._when = PP_SCRAMBLE_RE_NUM(whenMs)
-		action.hitbox = Vector3.new(20, 20, 30)
+		action.hitbox = learnedHitbox or defaultHitbox
 		action.ihbc = false
 		action:addPingProfile(profilePingMs, whenMs, solved.sampleCount)
 		timing.actions:push(action)
@@ -924,15 +1025,20 @@ return LPH_NO_VIRTUALIZE(function()
 			return false, "Failed to push timing: " .. tostring(err)
 		end
 
+		local promotedHb = timing.hitbox
 		Logger.notify(
-			"[Harvester] Promoted '%s' when=%.0fms @ %dms RTT (n=%d perfect=%d parry=%d conf=%.2f).",
+			"[Harvester] Promoted '%s' when=%.0fms @ %dms RTT (n=%d perfect=%d parry=%d conf=%.2f) hitbox=(%.1f, %.1f, %.1f) from %d pts.",
 			name,
 			solved.bestWhen * 1000,
 			profilePingMs,
 			solved.sampleCount,
 			solved.perfectCount,
 			solved.parryCount,
-			solved.confidence
+			solved.confidence,
+			(typeof(promotedHb) == "Vector3" and promotedHb.X) or 0,
+			(typeof(promotedHb) == "Vector3" and promotedHb.Y) or 0,
+			(typeof(promotedHb) == "Vector3" and promotedHb.Z) or 0,
+			solved.hitboxSamples or 0
 		)
 
 		return true, name

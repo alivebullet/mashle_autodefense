@@ -143,6 +143,8 @@ local function captureSnapshot()
 	return snapshot, playerGui
 end
 
+local keywordScore
+
 local function buildCurrentCandidates(snapshot, ability)
 	local results = {}
 
@@ -182,7 +184,7 @@ local function buildCurrentCandidates(snapshot, ability)
 	return results
 end
 
-local function keywordScore(path, firstValue, lastValue, ability)
+keywordScore = function(path, firstValue, lastValue, ability)
 	local score = 0
 	local fields = {
 		string.lower(path or ""),

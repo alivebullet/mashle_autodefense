@@ -185,7 +185,7 @@ local onGameDescendantRemoved = LPH_NO_VIRTUALIZE(function(descendant)
 	end
 
 	object:detach()
-	object[descendant] = nil
+	defenderObjects[descendant] = nil
 end)
 
 ---Update history.
