@@ -10127,6 +10127,21 @@ return LPH_NO_VIRTUALIZE(function()
 	local HITBOX_MOTION_WEIGHT_FLOOR = 0.02
 	local HITBOX_SHRINK_TOLERANCE = Vector3.new(0.5, 0.5, 1)
 
+	---Return the normalized model for an entity-like instance.
+	---@param entity Instance?
+	---@return Model?
+	local function entityModel(entity)
+		if typeof(entity) ~= "Instance" then
+			return nil
+		end
+
+		if entity:IsA("Model") then
+			return entity
+		end
+
+		return entity:FindFirstAncestorOfClass("Model")
+	end
+
 	---Invalidate cached hitbox state for an animation id.
 	---@param aid string?
 	local function invalidateHitboxState(aid)
@@ -10148,6 +10163,7 @@ return LPH_NO_VIRTUALIZE(function()
 	---@param entity Model?
 	---@return string
 	local function entityLabel(entity)
+		entity = entityModel(entity)
 		if typeof(entity) ~= "Instance" then
 			return "?"
 		end
@@ -10157,6 +10173,61 @@ return LPH_NO_VIRTUALIZE(function()
 		end
 
 		return entity.Name or "?"
+	end
+
+	---Return a stable scale signature for the entity's humanoid.
+	---@param entity Model?
+	---@return string
+	local function entityScaleSignature(entity)
+		local humanoid = entity and entity:FindFirstChildWhichIsA("Humanoid")
+		if not humanoid then
+			return "default"
+		end
+
+		local function scaleValue(name)
+			local value = humanoid:FindFirstChild(name)
+			if value and value:IsA("NumberValue") then
+				return value.Value
+			end
+
+			return 1
+		end
+
+		return string.format(
+			"%s:%.3f:%.3f:%.3f:%.3f:%.3f",
+			humanoid.RigType.Name,
+			scaleValue("BodyHeightScale"),
+			scaleValue("BodyWidthScale"),
+			scaleValue("BodyDepthScale"),
+			scaleValue("HeadScale"),
+			type(humanoid.HipHeight) == "number" and humanoid.HipHeight or 0
+		)
+	end
+
+	---Return a stable actor profile key for hitbox learning.
+	---@param entity Instance?
+	---@return string?
+	local function actorProfileKey(entity)
+		local model = entityModel(entity)
+		if not model then
+			return nil
+		end
+
+		local player = players:GetPlayerFromCharacter(model)
+		local scale = entityScaleSignature(model)
+		if player then
+			return string.format("player:%d:%s", player.UserId, scale)
+		end
+
+		return string.format("npc:%s:%s", model.Name or "?", scale)
+	end
+
+	---Return the cache key used for actor-specific hitbox learning.
+	---@param aid string
+	---@param actorKey string?
+	---@return string
+	local function hitboxLearningKey(aid, actorKey)
+		return string.format("%s|%s", aid, actorKey or "*")
 	end
 
 	---Create a serializable banned entry.
@@ -10198,6 +10269,7 @@ return LPH_NO_VIRTUALIZE(function()
 			x = x,
 			y = y,
 			z = z,
+			actorKey = type(info.actorKey) == "string" and info.actorKey or nil,
 		}
 	end
 
@@ -10227,6 +10299,7 @@ return LPH_NO_VIRTUALIZE(function()
 		return {
 			aid = aid,
 			entityName = type(info) == "table" and type(info.entityName) == "string" and info.entityName or "?",
+			actorKey = type(info) == "table" and type(info.actorKey) == "string" and info.actorKey or nil,
 			samples = samplesOut,
 		}
 	end
@@ -10297,6 +10370,7 @@ return LPH_NO_VIRTUALIZE(function()
 	---@param entity Model?
 	---@return boolean, number?, Instance?
 	local function shouldTrackEntity(entity)
+		entity = entityModel(entity)
 		if typeof(entity) ~= "Instance" then
 			return false, nil, nil
 		end
@@ -10631,7 +10705,8 @@ return LPH_NO_VIRTUALIZE(function()
 
 			local function sampleKey(sample)
 				return string.format(
-					"%d:%d:%d:%d:%d",
+					"%s:%d:%d:%d:%d:%d",
+					type(sample.actorKey) == "string" and sample.actorKey or "*",
 					math.round((sample.t or 0) * 1000),
 					math.round((sample.when or 0) * 1000),
 					math.round((sample.x or 0) * 100),
@@ -10817,6 +10892,7 @@ return LPH_NO_VIRTUALIZE(function()
 			distance = candidate._attribDist,
 			ping = ping,
 			t = now,
+			actorKey = actorProfileKey(candidate.entity),
 			hitOffset = localOffsetFromAttacker(candidate.entity),
 		})
 
@@ -10855,6 +10931,7 @@ return LPH_NO_VIRTUALIZE(function()
 			distance = candidate._attribDist,
 			ping = ping,
 			t = now,
+			actorKey = actorProfileKey(candidate.entity),
 			hitOffset = localOffsetFromAttacker(candidate.entity),
 		})
 
@@ -10915,7 +10992,8 @@ return LPH_NO_VIRTUALIZE(function()
 	---@return string
 	local function hitboxSampleKey(sample)
 		return string.format(
-			"%d:%d:%d:%d:%d",
+			"%s:%d:%d:%d:%d:%d",
+			type(sample.actorKey) == "string" and sample.actorKey or "*",
 			math.round((sample.t or 0) * 1000),
 			math.round((sample.when or 0) * 1000),
 			math.round((sample.x or 0) * 100),
@@ -10943,20 +11021,36 @@ return LPH_NO_VIRTUALIZE(function()
 			x = offset.X,
 			y = offset.Y,
 			z = offset.Z,
+			actorKey = type(sample.actorKey) == "string" and sample.actorKey or nil,
 		})
 	end
 
 	---Merge persisted damage samples with live damage samples for an animation.
 	---@param aid string
 	---@param bucket table?
+	---@param actorKey string?
 	---@return table[]
-	local function mergedHitboxSamples(aid, bucket)
+	local function mergedHitboxSamples(aid, bucket, actorKey)
 		local merged, seen = {}, {}
 		local persisted = persistedHitboxLearning[aid]
+		local matchedProfile = false
+
+		local function sampleMatches(normalized)
+			if type(actorKey) ~= "string" or actorKey == "" then
+				return true
+			end
+
+			if normalized.actorKey == actorKey then
+				matchedProfile = true
+				return true
+			end
+
+			return normalized.actorKey == nil
+		end
 
 		local function pushSample(sample)
 			local normalized = persistentHitboxSample(sample)
-			if not normalized then
+			if not normalized or not sampleMatches(normalized) then
 				return
 			end
 
@@ -10992,6 +11086,21 @@ return LPH_NO_VIRTUALIZE(function()
 		table.sort(merged, function(lhs, rhs)
 			return (lhs.t or 0) < (rhs.t or 0)
 		end)
+
+		if type(actorKey) == "string" and actorKey ~= "" then
+			local filtered = {}
+			for _, sample in ipairs(merged) do
+				if matchedProfile then
+					if sample.actorKey == actorKey then
+						filtered[#filtered + 1] = sample
+					end
+				elseif sample.actorKey == nil then
+					filtered[#filtered + 1] = sample
+				end
+			end
+
+			merged = filtered
+		end
 
 		while #merged > MAX_PERSISTED_HITBOX_SAMPLES do
 			table.remove(merged, 1)
@@ -11218,17 +11327,19 @@ return LPH_NO_VIRTUALIZE(function()
 	---Solve the current learned hitbox state for an animation id.
 	---@param aid string
 	---@return table
-	local function solveLiveHitboxState(aid)
+	local function solveLiveHitboxState(aid, actorKey)
+		local cacheKey = hitboxLearningKey(aid, actorKey)
 		local version = hitboxStateVersions[aid] or 0
-		local cached = hitboxStateCache[aid]
+		local cached = hitboxStateCache[cacheKey]
 		if cached and cached.version == version then
 			return cached.state
 		end
 
-		local learnedSamples = mergedHitboxSamples(aid, samples[aid])
+		local learnedSamples = mergedHitboxSamples(aid, samples[aid], actorKey)
 		local hitbox, hitboxOffset, hitboxSamples, hitboxRecentRequired, hitboxRecentSampleCount = solveHitboxShape(learnedSamples)
 		local state = {
 			samples = learnedSamples,
+			actorKey = actorKey,
 			hitbox = hitbox,
 			hitboxOffset = hitboxOffset,
 			hitboxSamples = hitboxSamples,
@@ -11236,7 +11347,7 @@ return LPH_NO_VIRTUALIZE(function()
 			hitboxRecentSampleCount = hitboxRecentSampleCount,
 		}
 
-		hitboxStateCache[aid] = {
+		hitboxStateCache[cacheKey] = {
 			version = version,
 			state = state,
 		}
@@ -11259,11 +11370,13 @@ return LPH_NO_VIRTUALIZE(function()
 	---@param fallbackHitbox Vector3?
 	---@param fallbackOffset Vector3?
 	---@param fallbackFacing boolean?
+	---@param entity Instance?
 	---@return table
-	function TimingHarvester.liveHitbox(aid, when, fallbackHitbox, fallbackOffset, fallbackFacing)
+	function TimingHarvester.liveHitbox(aid, when, fallbackHitbox, fallbackOffset, fallbackFacing, entity)
 		local hitbox = typeof(fallbackHitbox) == "Vector3" and fallbackHitbox or DEFAULT_HITBOX
 		local hitboxOffset = typeof(fallbackOffset) == "Vector3" and fallbackOffset or Vector3.zero
 		local facing = fallbackFacing == true
+		local actorKey = actorProfileKey(entity)
 
 		if type(aid) ~= "string" or aid == "" then
 			return {
@@ -11275,7 +11388,7 @@ return LPH_NO_VIRTUALIZE(function()
 			}
 		end
 
-		local solved = solveLiveHitboxState(aid)
+		local solved = solveLiveHitboxState(aid, actorKey)
 		if not adaptiveHitboxReady(solved) then
 			return {
 				hitbox = hitbox,
@@ -11309,7 +11422,7 @@ return LPH_NO_VIRTUALIZE(function()
 			return fallback
 		end
 
-		local liveHitbox = TimingHarvester.liveHitbox(aid, when, nil, fallback, false)
+		local liveHitbox = TimingHarvester.liveHitbox(aid, when, nil, fallback, false, nil)
 		if type(liveHitbox) ~= "table" then
 			return fallback
 		end
@@ -12678,7 +12791,7 @@ function HitboxOptions:adaptiveHitbox()
 	if aid then
 		local okHarvester, TimingHarvester = pcall(require, "Features/Combat/TimingHarvester")
 		if okHarvester and type(TimingHarvester) == "table" and type(TimingHarvester.liveHitbox) == "function" then
-			local dynamic = TimingHarvester.liveHitbox(aid, actionWhen(self.action), hitbox, hitboxOffset, facing)
+			local dynamic = TimingHarvester.liveHitbox(aid, actionWhen(self.action), hitbox, hitboxOffset, facing, self.entity)
 			if type(dynamic) == "table" then
 				if typeof(dynamic.hitbox) == "Vector3" then
 					hitbox = dynamic.hitbox

@@ -159,7 +159,7 @@ function HitboxOptions:adaptiveHitbox()
 	if aid then
 		local okHarvester, TimingHarvester = pcall(require, "Features/Combat/TimingHarvester")
 		if okHarvester and type(TimingHarvester) == "table" and type(TimingHarvester.liveHitbox) == "function" then
-			local dynamic = TimingHarvester.liveHitbox(aid, actionWhen(self.action), hitbox, hitboxOffset, facing)
+			local dynamic = TimingHarvester.liveHitbox(aid, actionWhen(self.action), hitbox, hitboxOffset, facing, self.entity)
 			if type(dynamic) == "table" then
 				if typeof(dynamic.hitbox) == "Vector3" then
 					hitbox = dynamic.hitbox
