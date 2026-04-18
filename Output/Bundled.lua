@@ -20506,8 +20506,6 @@ return LPH_NO_VIRTUALIZE(function()
 	local markerMaid = Maid.new()
 	local previewMaid = Maid.new()
 
-	local timingGroupCache = setmetatable({}, { __mode = "k" })
-
 	local isInitialized = false
 	local isPaused = false
 	local currentTrack = nil
@@ -20533,9 +20531,13 @@ return LPH_NO_VIRTUALIZE(function()
 	outer.Name = "ConfigViewerOuter"
 	outer.BackgroundColor3 = Color3.new(0, 0, 0)
 	outer.BorderSizePixel = 0
-	outer.Position = UDim2.new(0.12, 0, 0.08, 0)
+	outer.AnchorPoint = Vector2.new(0.5, 0)
+	outer.Position = UDim2.new(0.5, 0, 0, 12)
 	outer.Size = UDim2.new(0, PANEL_W, 0, PANEL_H)
 	outer.Parent = screenGui
+
+	local outerScale = Instance.new("UIScale")
+	outerScale.Parent = outer
 
 	local inner = Instance.new("Frame")
 	inner.Name = "ConfigViewerInner"
@@ -20925,6 +20927,27 @@ return LPH_NO_VIRTUALIZE(function()
 		statusLabel.Text = text
 	end
 
+	local function normalizedGroupName(value)
+		return string.lower(tostring(value or "")):gsub("[%W_]+", "")
+	end
+
+	local function localCharacterModel()
+		local localCharacter = players.LocalPlayer and players.LocalPlayer.Character
+		if typeof(localCharacter) == "Instance" and localCharacter:IsA("Model") then
+			return localCharacter
+		end
+
+		return nil
+	end
+
+	local function updateOuterScale()
+		local camera = workspace.CurrentCamera
+		local viewport = camera and camera.ViewportSize or Vector2.new(PANEL_W, PANEL_H)
+		local widthScale = math.max(viewport.X - 24, 1) / PANEL_W
+		local heightScale = math.max(viewport.Y - 24, 1) / PANEL_H
+		outerScale.Scale = math.max(math.min(widthScale, heightScale, 1), 0.1)
+	end
+
 	local function lowerKey(value)
 		return string.lower(tostring(value or ""))
 	end
@@ -20985,29 +21008,63 @@ return LPH_NO_VIRTUALIZE(function()
 	end
 
 	local function derivedGroupName(timing)
-		local cached = timingGroupCache[timing]
-		if cached and #cached > 0 then
-			return cached
-		end
-
-		local aid = timing._id
-		local captured = type(aid) == "string" and AnimationLogger.getCaptured(aid) or nil
-		if captured and type(captured.entityName) == "string" and #captured.entityName > 0 then
-			timingGroupCache[timing] = captured.entityName
-			return captured.entityName
-		end
-
-		local observed = type(aid) == "string" and TimingHarvester.getObserved()[aid] or nil
-		local observedName = observed and observed.meta and observed.meta.entityName
-		if type(observedName) == "string" and #observedName > 0 then
-			timingGroupCache[timing] = observedName
-			return observedName
-		end
-
 		local harvested = tostring(timing.name or ""):match("^(.-)_%d+_Harvested$")
 		local fallback = harvested or timing.name or "Unknown"
-		timingGroupCache[timing] = fallback
+		if type(fallback) ~= "string" or #fallback <= 0 then
+			return "Unknown"
+		end
+
 		return fallback
+	end
+
+	local function appendGroupName(names, seen, groupName)
+		if type(groupName) ~= "string" then
+			return
+		end
+
+		local trimmed = string.match(groupName, "^%s*(.-)%s*$")
+		local key = normalizedGroupName(trimmed)
+		if key == "" or seen[key] then
+			return
+		end
+
+		seen[key] = true
+		table.insert(names, trimmed)
+	end
+
+	local function groupNamesForTiming(timing)
+		local names = {}
+		local seen = {}
+		local primaryName = derivedGroupName(timing)
+		appendGroupName(names, seen, primaryName)
+
+		local aid = timingAid(timing)
+		local captured = type(aid) == "string" and AnimationLogger.getCaptured(aid) or nil
+		local observed = type(aid) == "string" and TimingHarvester.getObserved()[aid] or nil
+		local previewSource = aid and AnimationLogger.getPreviewSource(aid) or nil
+
+		local function appendAlias(name)
+			if type(name) ~= "string" or name == "Player" then
+				return
+			end
+
+			if normalizedGroupName(name) == normalizedGroupName(primaryName) then
+				return
+			end
+
+			appendGroupName(names, seen, name)
+		end
+
+		appendAlias(captured and captured.entityName or nil)
+		appendAlias(observed and observed.meta and observed.meta.entityName or nil)
+		if typeof(previewSource) == "Instance" and previewSource:IsA("Model") and previewSource.Parent then
+			local localCharacter = localCharacterModel()
+			if previewSource ~= localCharacter then
+				appendAlias(previewSource.Name)
+			end
+		end
+
+		return names
 	end
 
 	local function timingAid(timing)
@@ -21019,27 +21076,52 @@ return LPH_NO_VIRTUALIZE(function()
 		return aid
 	end
 
+	local function findLiveModel(groupName)
+		local live = workspace:FindFirstChild("Live")
+		if not live or type(groupName) ~= "string" or #groupName <= 0 then
+			return nil
+		end
+
+		local exact = live:FindFirstChild(groupName)
+		if typeof(exact) == "Instance" and exact:IsA("Model") then
+			return exact
+		end
+
+		local normalizedWanted = normalizedGroupName(groupName)
+		if normalizedWanted == "" then
+			return nil
+		end
+
+		local partial = nil
+		for _, child in ipairs(live:GetChildren()) do
+			if child:IsA("Model") then
+				local normalizedChild = normalizedGroupName(child.Name)
+				if normalizedChild == normalizedWanted then
+					return child
+				end
+
+				if not partial and (string.find(normalizedChild, normalizedWanted, 1, true) or string.find(normalizedWanted, normalizedChild, 1, true)) then
+					partial = child
+				end
+			end
+		end
+
+		return partial
+	end
+
 	local function previewSourceForTiming(timing, groupName)
+		local liveModel = findLiveModel(groupName)
+		if liveModel then
+			return liveModel
+		end
+
 		local aid = timingAid(timing)
 		local previewSource = aid and AnimationLogger.getPreviewSource(aid) or nil
 		if typeof(previewSource) == "Instance" and previewSource:IsA("Model") and previewSource.Parent then
 			return previewSource
 		end
 
-		if groupName == "Player" then
-			local localCharacter = players.LocalPlayer and players.LocalPlayer.Character
-			if typeof(localCharacter) == "Instance" and localCharacter:IsA("Model") then
-				return localCharacter
-			end
-		end
-
-		local live = workspace:FindFirstChild("Live")
-		local possible = live and groupName and live:FindFirstChild(groupName)
-		if typeof(possible) == "Instance" and possible:IsA("Model") then
-			return possible
-		end
-
-		return nil
+		return localCharacterModel()
 	end
 
 	local function cloneModel(sourceModel)
@@ -21278,18 +21360,19 @@ return LPH_NO_VIRTUALIZE(function()
 		end
 
 		for _, timing in ipairs(container:list()) do
-			local groupName = derivedGroupName(timing)
-			local group = groupedNpcMap[groupName]
-			if not group then
-				group = {
-					name = groupName,
-					timings = {},
-				}
-				groupedNpcMap[groupName] = group
-				table.insert(groupedNpcList, group)
-			end
+			for _, groupName in ipairs(groupNamesForTiming(timing)) do
+				local group = groupedNpcMap[groupName]
+				if not group then
+					group = {
+						name = groupName,
+						timings = {},
+					}
+					groupedNpcMap[groupName] = group
+					table.insert(groupedNpcList, group)
+				end
 
-			table.insert(group.timings, timing)
+				table.insert(group.timings, timing)
+			end
 		end
 
 		table.sort(groupedNpcList, function(left, right)
@@ -21310,6 +21393,20 @@ return LPH_NO_VIRTUALIZE(function()
 		end
 	end
 
+	local function groupContainsTiming(group, timing)
+		if not group or not timing then
+			return false
+		end
+
+		for _, candidate in ipairs(group.timings) do
+			if candidate == timing then
+				return true
+			end
+		end
+
+		return false
+	end
+
 	local function ensureSelections()
 		if not groupedNpcMap[state.selectedNpc] then
 			state.selectedNpc = groupedNpcList[1] and groupedNpcList[1].name or nil
@@ -21322,7 +21419,7 @@ return LPH_NO_VIRTUALIZE(function()
 			return
 		end
 
-		if not selectedTimingValid() or derivedGroupName(state.selectedTiming) ~= state.selectedNpc then
+		if not selectedTimingValid() or not groupContainsTiming(currentGroup, state.selectedTiming) then
 			state.selectedTiming = currentGroup.timings[1]
 		end
 
@@ -21616,7 +21713,7 @@ return LPH_NO_VIRTUALIZE(function()
 
 				for _, timing in ipairs(container:list()) do
 					if timingAid(timing) == entryData.aid then
-						state.selectedNpc = derivedGroupName(timing)
+						state.selectedNpc = groupNamesForTiming(timing)[1] or derivedGroupName(timing)
 						state.selectedTiming = timing
 						state.selectedAction = nil
 						ConfigViewerPanel.refresh(false)
@@ -21757,6 +21854,7 @@ return LPH_NO_VIRTUALIZE(function()
 
 		screenGui.Enabled = state
 		if state then
+			updateOuterScale()
 			ConfigViewerPanel.refresh(true)
 		end
 	end
@@ -21770,6 +21868,7 @@ return LPH_NO_VIRTUALIZE(function()
 			return
 		end
 
+		updateOuterScale()
 		Library:MakeDraggable(outer)
 
 		panelMaid:add(closeButton.MouseButton1Click:Connect(function()
@@ -21961,6 +22060,8 @@ return LPH_NO_VIRTUALIZE(function()
 		end))
 
 		panelMaid:add(runService.PreRender:Connect(function()
+			updateOuterScale()
+
 			if not screenGui.Enabled then
 				return
 			end
