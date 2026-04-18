@@ -10114,11 +10114,11 @@ return LPH_NO_VIRTUALIZE(function()
 	local HITBOX_PAD_WIDTH = 2
 	local HITBOX_PAD_HEIGHT = 2
 	local HITBOX_PAD_DEPTH = 4
-	local DEFAULT_HITBOX = Vector3.new(20, 20, 30)
+	local DEFAULT_HITBOX = Vector3.new(18, 15, 28)
 	local HITBOX_MIN_EXTENT = Vector3.new(8, 8, 12)
 	local HITBOX_MAX_EXTENT = Vector3.new(40, 30, 50)
 	local MIN_HITBOX_SAMPLES = 3
-	local MIN_HITBOX_ADAPT_SAMPLES = 6
+	local MIN_HITBOX_ADAPT_SAMPLES = 4
 	local MAX_PERSISTED_HITBOX_SAMPLES = 96
 	local MIN_HITBOX_SHRINK_SAMPLES = 12
 	local MIN_HITBOX_SHRINK_RECENT_SAMPLES = 6
@@ -10126,6 +10126,11 @@ return LPH_NO_VIRTUALIZE(function()
 	local HITBOX_MOTION_NEIGHBORS = 5
 	local HITBOX_MOTION_WEIGHT_FLOOR = 0.02
 	local HITBOX_SHRINK_TOLERANCE = Vector3.new(0.5, 0.5, 1)
+
+	local LEGACY_DEFAULT_HITBOXES = {
+		["20:20:30"] = true,
+		["30:30:30"] = true,
+	}
 
 	---Return the normalized model for an entity-like instance.
 	---@param entity Instance?
@@ -10230,6 +10235,39 @@ return LPH_NO_VIRTUALIZE(function()
 		return string.format("%s|%s", aid, actorKey or "*")
 	end
 
+	---Return the live source for hitbox learning samples.
+	---@return string
+	local function hitboxSampleSource()
+		return Configuration.expectToggleValue("EnableAutoDefense") == true and "defense" or "harvester"
+	end
+
+	---Return whether this hitbox matches a generated default rectangle.
+	---@param hitbox Vector3?
+	---@return boolean
+	local function isLegacyDefaultHitbox(hitbox)
+		if typeof(hitbox) ~= "Vector3" then
+			return false
+		end
+
+		local key = string.format("%d:%d:%d", math.round(hitbox.X), math.round(hitbox.Y), math.round(hitbox.Z))
+		return LEGACY_DEFAULT_HITBOXES[key] == true
+	end
+
+	---Normalize a generated default hitbox to the smaller standard rectangle.
+	---@param hitbox Vector3?
+	---@return Vector3
+	local function standardBaseHitbox(hitbox)
+		if typeof(hitbox) ~= "Vector3" then
+			return DEFAULT_HITBOX
+		end
+
+		if hitbox == Vector3.zero or isLegacyDefaultHitbox(hitbox) then
+			return DEFAULT_HITBOX
+		end
+
+		return hitbox
+	end
+
 	---Create a serializable banned entry.
 	---@param aid string
 	---@param info table?
@@ -10270,6 +10308,7 @@ return LPH_NO_VIRTUALIZE(function()
 			y = y,
 			z = z,
 			actorKey = type(info.actorKey) == "string" and info.actorKey or nil,
+			source = type(info.source) == "string" and info.source or nil,
 		}
 	end
 
@@ -10893,6 +10932,7 @@ return LPH_NO_VIRTUALIZE(function()
 			ping = ping,
 			t = now,
 			actorKey = actorProfileKey(candidate.entity),
+			source = hitboxSampleSource(),
 			hitOffset = localOffsetFromAttacker(candidate.entity),
 		})
 
@@ -10932,6 +10972,7 @@ return LPH_NO_VIRTUALIZE(function()
 			ping = ping,
 			t = now,
 			actorKey = actorProfileKey(candidate.entity),
+			source = hitboxSampleSource(),
 			hitOffset = localOffsetFromAttacker(candidate.entity),
 		})
 
@@ -10992,8 +11033,9 @@ return LPH_NO_VIRTUALIZE(function()
 	---@return string
 	local function hitboxSampleKey(sample)
 		return string.format(
-			"%s:%d:%d:%d:%d:%d",
+			"%s:%s:%d:%d:%d:%d:%d",
 			type(sample.actorKey) == "string" and sample.actorKey or "*",
+			type(sample.source) == "string" and sample.source or "*",
 			math.round((sample.t or 0) * 1000),
 			math.round((sample.when or 0) * 1000),
 			math.round((sample.x or 0) * 100),
@@ -11022,6 +11064,7 @@ return LPH_NO_VIRTUALIZE(function()
 			y = offset.Y,
 			z = offset.Z,
 			actorKey = type(sample.actorKey) == "string" and sample.actorKey or nil,
+			source = type(sample.source) == "string" and sample.source or nil,
 		})
 	end
 
@@ -11032,6 +11075,8 @@ return LPH_NO_VIRTUALIZE(function()
 	---@return table[]
 	local function mergedHitboxSamples(aid, bucket, actorKey)
 		local merged, seen = {}, {}
+		local liveDefenseSamples = {}
+		local liveFallbackSamples = {}
 		local persisted = persistedHitboxLearning[aid]
 		local matchedProfile = false
 
@@ -11061,6 +11106,11 @@ return LPH_NO_VIRTUALIZE(function()
 
 			seen[key] = true
 			table.insert(merged, normalized)
+			if normalized.source == "defense" then
+				liveDefenseSamples[#liveDefenseSamples + 1] = normalized
+			elseif normalized.source ~= nil then
+				liveFallbackSamples[#liveFallbackSamples + 1] = normalized
+			end
 		end
 
 		if type(persisted) == "table" and type(persisted.samples) == "table" then
@@ -11100,6 +11150,12 @@ return LPH_NO_VIRTUALIZE(function()
 			end
 
 			merged = filtered
+		end
+
+		if #liveDefenseSamples >= MIN_HITBOX_SAMPLES then
+			merged = liveDefenseSamples
+		elseif #liveFallbackSamples >= MIN_HITBOX_SAMPLES then
+			merged = liveFallbackSamples
 		end
 
 		while #merged > MAX_PERSISTED_HITBOX_SAMPLES do
@@ -11165,7 +11221,7 @@ return LPH_NO_VIRTUALIZE(function()
 	---@return Vector3
 	local function chooseAdaptedHitbox(current, solved, fallback)
 		local fallbackBox = typeof(fallback) == "Vector3" and fallback or DEFAULT_HITBOX
-		local currentBox = typeof(current) == "Vector3" and current or fallbackBox
+		local currentBox = standardBaseHitbox(typeof(current) == "Vector3" and current or fallbackBox)
 		if type(solved) ~= "table" or typeof(solved.hitbox) ~= "Vector3" then
 			return currentBox
 		end
@@ -11373,7 +11429,7 @@ return LPH_NO_VIRTUALIZE(function()
 	---@param entity Instance?
 	---@return table
 	function TimingHarvester.liveHitbox(aid, when, fallbackHitbox, fallbackOffset, fallbackFacing, entity)
-		local hitbox = typeof(fallbackHitbox) == "Vector3" and fallbackHitbox or DEFAULT_HITBOX
+		local hitbox = standardBaseHitbox(typeof(fallbackHitbox) == "Vector3" and fallbackHitbox or DEFAULT_HITBOX)
 		local hitboxOffset = typeof(fallbackOffset) == "Vector3" and fallbackOffset or Vector3.zero
 		local facing = fallbackFacing == true
 		local actorKey = actorProfileKey(entity)
@@ -15780,6 +15836,8 @@ return LPH_NO_VIRTUALIZE(function()
 	---@module Features.Combat.TimingHarvester
 	local TimingHarvester = require("Features/Combat/TimingHarvester")
 
+	local DEFAULT_HITBOX = Vector3.new(18, 15, 28)
+
 	-- Services.
 	local players = game:GetService("Players")
 
@@ -16194,7 +16252,7 @@ return LPH_NO_VIRTUALIZE(function()
 		timing.tag = "Undefined"
 		timing.imdd = 0
 		timing.imxd = 100
-		timing.hitbox = Vector3.new(20, 20, 30)
+		timing.hitbox = DEFAULT_HITBOX
 		timing.fhb = true
 		timing.pfh = true
 		timing.pfht = 0.15
@@ -16212,7 +16270,7 @@ return LPH_NO_VIRTUALIZE(function()
 			action.name = "Action_DamageHit_1"
 			action._type = "Parry"
 			action._when = PP_SCRAMBLE_RE_NUM(math.round(adjMs))
-			action.hitbox = Vector3.new(20, 20, 30)
+			action.hitbox = DEFAULT_HITBOX
 			action.ihbc = false
 
 			timing.actions:push(action)
@@ -16243,7 +16301,7 @@ return LPH_NO_VIRTUALIZE(function()
 					action.name = string.format("Action_%s_%d", kf.name, i)
 					action._type = "Parry"
 					action._when = PP_SCRAMBLE_RE_NUM(math.round(kf.timePosition * 1000))
-					action.hitbox = Vector3.new(20, 20, 30)
+					action.hitbox = DEFAULT_HITBOX
 					action.ihbc = false
 
 					timing.actions:push(action)
@@ -16254,7 +16312,7 @@ return LPH_NO_VIRTUALIZE(function()
 				action.name = "Action_Default_1"
 				action._type = "Parry"
 				action._when = PP_SCRAMBLE_RE_NUM(math.round(data.length * 0.6 * 1000))
-				action.hitbox = Vector3.new(20, 20, 30)
+				action.hitbox = DEFAULT_HITBOX
 				action.ihbc = false
 
 				timing.actions:push(action)

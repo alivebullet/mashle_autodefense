@@ -31,6 +31,8 @@ return LPH_NO_VIRTUALIZE(function()
 	---@module Features.Combat.TimingHarvester
 	local TimingHarvester = require("Features/Combat/TimingHarvester")
 
+	local DEFAULT_HITBOX = Vector3.new(18, 15, 28)
+
 	-- Services.
 	local players = game:GetService("Players")
 
@@ -445,7 +447,7 @@ return LPH_NO_VIRTUALIZE(function()
 		timing.tag = "Undefined"
 		timing.imdd = 0
 		timing.imxd = 100
-		timing.hitbox = Vector3.new(20, 20, 30)
+		timing.hitbox = DEFAULT_HITBOX
 		timing.fhb = true
 		timing.pfh = true
 		timing.pfht = 0.15
@@ -463,7 +465,7 @@ return LPH_NO_VIRTUALIZE(function()
 			action.name = "Action_DamageHit_1"
 			action._type = "Parry"
 			action._when = PP_SCRAMBLE_RE_NUM(math.round(adjMs))
-			action.hitbox = Vector3.new(20, 20, 30)
+			action.hitbox = DEFAULT_HITBOX
 			action.ihbc = false
 
 			timing.actions:push(action)
@@ -494,7 +496,7 @@ return LPH_NO_VIRTUALIZE(function()
 					action.name = string.format("Action_%s_%d", kf.name, i)
 					action._type = "Parry"
 					action._when = PP_SCRAMBLE_RE_NUM(math.round(kf.timePosition * 1000))
-					action.hitbox = Vector3.new(20, 20, 30)
+					action.hitbox = DEFAULT_HITBOX
 					action.ihbc = false
 
 					timing.actions:push(action)
@@ -505,7 +507,7 @@ return LPH_NO_VIRTUALIZE(function()
 				action.name = "Action_Default_1"
 				action._type = "Parry"
 				action._when = PP_SCRAMBLE_RE_NUM(math.round(data.length * 0.6 * 1000))
-				action.hitbox = Vector3.new(20, 20, 30)
+				action.hitbox = DEFAULT_HITBOX
 				action.ihbc = false
 
 				timing.actions:push(action)
