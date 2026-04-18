@@ -1165,7 +1165,11 @@ return LPH_NO_VIRTUALIZE(function()
 		animationCountLabel.Text = string.format("Saved Timings: %d", #timings)
 
 		if not group then
-			animationHintLabel.Text = "No NPC group selected."
+			if not SaveManager.llcn or #SaveManager.llcn <= 0 then
+				animationHintLabel.Text = "No config loaded. Use the Config Viewer tab to load a saved timing file."
+			else
+				animationHintLabel.Text = string.format("Loaded config '%s' has no saved animation timings.", SaveManager.llcn)
+			end
 			return
 		end
 
@@ -1358,7 +1362,11 @@ return LPH_NO_VIRTUALIZE(function()
 		end
 
 		if #groupedNpcList == 0 then
-			setStatus("No saved config timings are loaded.")
+			if not SaveManager.llcn or #SaveManager.llcn <= 0 then
+				setStatus("No config loaded. Use the Config Viewer tab to load one.")
+			else
+				setStatus(string.format("Loaded config '%s' has no saved animation timings.", SaveManager.llcn))
+			end
 		else
 			local bannedIds = 0
 			for _ in next, TimingHarvester.getBanned() do

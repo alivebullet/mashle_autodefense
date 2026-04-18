@@ -14,6 +14,8 @@ local TimingHarvester = require("Features/Combat/TimingHarvester")
 local Logger = require("Utility/Logger")
 
 local summaryLabel = nil
+local configNameInput = nil
+local configListDropdown = nil
 
 local function bannedCount()
 	local count = 0
@@ -23,9 +25,26 @@ local function bannedCount()
 	return count
 end
 
+local function configAnimationContainer()
+	return SaveManager.as and SaveManager.as.config or nil
+end
+
 local function configTimingCount()
-	local config = SaveManager.as and SaveManager.as.config
+	local config = configAnimationContainer()
 	return config and config:count() or 0
+end
+
+local function refreshConfigList()
+	if configListDropdown then
+		SaveManager.refresh(configListDropdown)
+	end
+end
+
+local function refreshViewerState(reloadPreview)
+	refreshConfigList()
+	ConfigViewerTab.refreshSummary()
+	ConfigViewerPanel.refresh(reloadPreview ~= false)
+	return true
 end
 
 function ConfigViewerTab.refreshSummary()
@@ -33,28 +52,59 @@ function ConfigViewerTab.refreshSummary()
 		return
 	end
 
+	local loadedConfigName = SaveManager.llcn or "none"
+	local timingCount = configTimingCount()
+	local detail = "Open the square viewer to browse NPC thumbnails, play saved animations, scrub the timeline, and edit per-action timings."
+
+	if not SaveManager.llcn or #SaveManager.llcn <= 0 then
+		detail = "No config is currently loaded. Use the controls above to load your saved timing file into the viewer."
+	elseif timingCount == 0 then
+		detail = string.format("Loaded config '%s' has no saved animation timings.", SaveManager.llcn)
+	end
+
 	summaryLabel:SetText(string.format(
-		"Loaded Config: %s\nSaved Animation Timings: %d\nBanned Animation IDs: %d\n\nOpen the square viewer to browse NPC thumbnails, play saved animations, scrub the timeline, and edit per-action timings.",
-		SaveManager.llcn or "unsaved session",
-		configTimingCount(),
-		bannedCount()
+		"Loaded Config: %s\nSaved Animation Timings: %d\nBanned Animation IDs: %d\n\n%s",
+		loadedConfigName,
+		timingCount,
+		bannedCount(),
+		detail
 	))
 end
 
 ---@param groupbox table
 function ConfigViewerTab.initViewerSection(groupbox)
-	summaryLabel = groupbox:AddLabel("Loading config viewer summary...", true)
-	ConfigViewerTab.refreshSummary()
+	configNameInput = groupbox:AddInput("ConfigViewerConfigName", {
+		Text = "Config Name",
+	})
 
-	groupbox:AddButton("Open Config Viewer", function()
-		ConfigViewerPanel.toggle()
-		ConfigViewerTab.refreshSummary()
+	configListDropdown = groupbox:AddDropdown("ConfigViewerConfigList", {
+		Text = "Config List",
+		Values = SaveManager.list(),
+		AllowNull = true,
+	})
+
+	groupbox
+		:AddButton("Create Config", function()
+			SaveManager.create(configNameInput.Value)
+			refreshViewerState(false)
+		end)
+		:AddButton({
+			Text = "Load Config",
+			DoubleClick = true,
+			Func = function()
+				SaveManager.load(configListDropdown.Value)
+				refreshViewerState(true)
+			end,
+		})
+
+	groupbox:AddButton("Refresh Config List", function()
+		refreshViewerState(false)
+		Logger.notify("Config viewer list refreshed.")
 	end)
 
-	groupbox:AddButton("Refresh Viewer Summary", function()
-		ConfigViewerPanel.refresh(true)
-		ConfigViewerTab.refreshSummary()
-		Logger.notify("Config viewer refreshed.")
+	groupbox:AddButton("Open Config Viewer", function()
+		ConfigViewerPanel.visible(true)
+		refreshViewerState(true)
 	end)
 
 	groupbox:AddButton("Save Current Timing Config", function()
@@ -63,12 +113,20 @@ function ConfigViewerTab.initViewerSection(groupbox)
 		end
 
 		SaveManager.write(SaveManager.llcn)
+		refreshViewerState(false)
+	end)
+
+	groupbox:AddButton("Set To Auto Load", function()
+		SaveManager.autoload(configListDropdown and configListDropdown.Value or nil)
 		ConfigViewerTab.refreshSummary()
 	end)
 
 	groupbox:AddButton("Close Config Viewer", function()
 		ConfigViewerPanel.visible(false)
 	end)
+
+	summaryLabel = groupbox:AddLabel("Loading config viewer summary...", true)
+	ConfigViewerTab.refreshSummary()
 end
 
 ---@param groupbox table
