@@ -34,6 +34,9 @@ local InputClient = require("Game/InputClient")
 ---@module Features.Combat.AttributeListener
 local AttributeListener = require("Features/Combat/AttributeListener")
 
+---@module Utility.NetworkLatency
+local NetworkLatency = require("Utility/NetworkLatency")
+
 ---@module Game.Keybinding
 local Keybinding = require("Game/Keybinding")
 
@@ -493,22 +496,7 @@ end
 ---@todo: For every usage, the sending delay needs to be continously updated. The receiving one must be calculated once at initial send for AP ping compensation.
 ---@return number
 function Defender.rtt()
-	local network = stats:FindFirstChild("Network")
-	if not network then
-		return
-	end
-
-	local serverStatsItem = network:FindFirstChild("ServerStatsItem")
-	if not serverStatsItem then
-		return
-	end
-
-	local dataPingItem = serverStatsItem:FindFirstChild("Data Ping")
-	if not dataPingItem then
-		return
-	end
-
-	return (dataPingItem:GetValue() / 1000)
+	return NetworkLatency.rttSeconds()
 end
 
 ---Repeat conditional.
@@ -523,6 +511,30 @@ Defender.rc = LPH_NO_VIRTUALIZE(function(self, info)
 	return true
 end)
 
+---Cheap conservative hitbox distance gate before running physics overlap checks.
+---@param options HitboxOptions
+---@return boolean
+local function coarseHitboxCandidate(options)
+	local character = players.LocalPlayer.Character
+	if not character then
+		return false
+	end
+
+	local root = character:FindFirstChild("HumanoidRootPart")
+	if not root then
+		return false
+	end
+
+	local hitbox = options:hitbox()
+	local position = options:pos()
+	if options:facingHitbox() then
+		position = position * CFrame.new(0, 0, -(hitbox.Z / 2))
+	end
+
+	local maxReach = (hitbox.Magnitude * 0.5) + (root.Size.Magnitude * 0.5) + 2
+	return (position.Position - root.Position).Magnitude <= maxReach
+end
+
 ---Handle delay until in hitbox.
 ---@param self Defender
 ---@param options HitboxOptions
@@ -535,6 +547,10 @@ Defender.duih = LPH_NO_VIRTUALIZE(function(self, options, info)
 	while task.wait() do
 		if not self:rc(info) then
 			return false
+		end
+
+		if not coarseHitboxCandidate(clone) then
+			continue
 		end
 
 		if not self:hc(clone, nil) then

@@ -10,8 +10,8 @@
 local Action = {}
 Action.__index = Action
 
--- Services.
-local stats = game:GetService("Stats")
+---@module Utility.NetworkLatency
+local NetworkLatency = require("Utility/NetworkLatency")
 
 -- Constants.
 local PROFILE_MERGE_THRESHOLD_MS = 30
@@ -19,29 +19,7 @@ local PROFILE_MERGE_THRESHOLD_MS = 30
 ---Get the current full RTT in milliseconds.
 ---@return number?
 local function currentPingMs()
-	local network = stats:FindFirstChild("Network")
-	if not network then
-		return nil
-	end
-
-	local serverStatsItem = network:FindFirstChild("ServerStatsItem")
-	if not serverStatsItem then
-		return nil
-	end
-
-	local dataPing = serverStatsItem:FindFirstChild("Data Ping")
-	if not dataPing then
-		return nil
-	end
-
-	local ok, value = pcall(function()
-		return dataPing:GetValue()
-	end)
-	if not ok or type(value) ~= "number" then
-		return nil
-	end
-
-	return value
+	return NetworkLatency.rttMilliseconds()
 end
 
 ---Return the closest stored ping profile for the current RTT.

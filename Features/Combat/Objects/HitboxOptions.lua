@@ -19,6 +19,9 @@ HitboxOptions.__index = HitboxOptions
 -- Services.
 local players = game:GetService("Players")
 
+---@module Features.Combat.PositionHistory
+local PositionHistory = require("Features/Combat/PositionHistory")
+
 ---Return the best action time-position available for adaptive hitbox lookup.
 ---@param action Action?
 ---@return number?
@@ -55,6 +58,43 @@ local function timingId(timing)
 	end
 
 	return nil
+end
+
+---Return the humanoid driving the extrapolated entity, if any.
+---@param entity Model?
+---@return Humanoid?
+local function entityHumanoid(entity)
+	if typeof(entity) ~= "Instance" then
+		return nil
+	end
+
+	return entity:IsA("Model") and entity:FindFirstChildWhichIsA("Humanoid") or nil
+end
+
+---Return the acceleration we should apply during prediction.
+---@param entity Model?
+---@return Vector3
+local function predictionAcceleration(entity)
+	local humanoid = entityHumanoid(entity)
+	if not humanoid then
+		return Vector3.zero
+	end
+
+	if humanoid.FloorMaterial ~= Enum.Material.Air then
+		return Vector3.zero
+	end
+
+	local ok, state = pcall(humanoid.GetState, humanoid)
+	if ok then
+		if state == Enum.HumanoidStateType.Climbing
+			or state == Enum.HumanoidStateType.Seated
+			or state == Enum.HumanoidStateType.Swimming
+		then
+			return Vector3.zero
+		end
+	end
+
+	return Vector3.new(0, -workspace.Gravity, 0)
 end
 
 ---Hit color.
@@ -188,8 +228,16 @@ HitboxOptions.extrapolate = LPH_NO_VIRTUALIZE(function(self)
 		return error("HitboxOptions.extrapolate - no predicted time specified")
 	end
 
-	-- Return the extrapolated position.
-	local predicted = self.part.CFrame + (self.part.AssemblyLinearVelocity * self.ptime)
+	local current = self.part.CFrame
+	local acceleration = predictionAcceleration(self.entity)
+	local displacement = (self.part.AssemblyLinearVelocity * self.ptime) + (acceleration * (0.5 * self.ptime * self.ptime))
+	local predicted = CFrame.new(current.Position + displacement) * current.Rotation
+
+	local yawRate = self.entity and PositionHistory.yrate(self.entity) or nil
+	if type(yawRate) == "number" and yawRate == yawRate then
+		predicted = predicted * CFrame.Angles(0, yawRate * self.ptime, 0)
+	end
+
 	local hitboxOffset = self:hitboxOffset()
 	if hitboxOffset.Magnitude > 0 then
 		predicted = predicted * CFrame.new(hitboxOffset)

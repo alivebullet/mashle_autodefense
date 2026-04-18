@@ -15,9 +15,11 @@ return LPH_NO_VIRTUALIZE(function()
 	---@module Utility.Configuration
 	local Configuration = require("Utility/Configuration")
 
+	---@module Utility.NetworkLatency
+	local NetworkLatency = require("Utility/NetworkLatency")
+
 	-- Services.
 	local players = game:GetService("Players")
-	local stats = game:GetService("Stats")
 
 	-- State.
 	local harvesterMaid = Maid.new()
@@ -46,6 +48,10 @@ return LPH_NO_VIRTUALIZE(function()
 	-- Key: animation ID, Value: { entityName = string, samples = { { t, when, x, y, z } } }
 	local persistedHitboxLearning = {}
 
+	-- Per-animation cache for solved live hitbox state.
+	local hitboxStateVersions = {}
+	local hitboxStateCache = {}
+
 	-- Tuning constants.
 	local MAX_RECENT_ANIMS = 24
 	local ANIM_LOOKBACK_S = 2.0
@@ -71,6 +77,23 @@ return LPH_NO_VIRTUALIZE(function()
 	local HITBOX_MOTION_NEIGHBORS = 5
 	local HITBOX_MOTION_WEIGHT_FLOOR = 0.02
 	local HITBOX_SHRINK_TOLERANCE = Vector3.new(0.5, 0.5, 1)
+
+	---Invalidate cached hitbox state for an animation id.
+	---@param aid string?
+	local function invalidateHitboxState(aid)
+		if type(aid) ~= "string" or aid == "" then
+			return
+		end
+
+		hitboxStateVersions[aid] = (hitboxStateVersions[aid] or 0) + 1
+		hitboxStateCache[aid] = nil
+	end
+
+	---Clear all cached hitbox state.
+	local function clearHitboxStateCache()
+		hitboxStateVersions = {}
+		hitboxStateCache = {}
+	end
 
 	---Get the display label for an entity inside the harvester.
 	---@param entity Model?
@@ -301,25 +324,7 @@ return LPH_NO_VIRTUALIZE(function()
 	---Get full RTT in seconds from Stats.Network.ServerStatsItem."Data Ping" (ms).
 	---@return number
 	local function rttSeconds()
-		local network = stats:FindFirstChild("Network")
-		if not network then
-			return 0
-		end
-
-		local serverStatsItem = network:FindFirstChild("ServerStatsItem")
-		if not serverStatsItem then
-			return 0
-		end
-
-		local dataPing = serverStatsItem:FindFirstChild("Data Ping")
-		if not dataPing then
-			return 0
-		end
-
-		local ok, v = pcall(function()
-			return dataPing:GetValue()
-		end)
-		return (ok and type(v) == "number") and (v * 0.001) or 0
+		return NetworkLatency.rttSeconds()
 	end
 
 	---Is the harvester enabled via config toggle?
@@ -676,6 +681,7 @@ return LPH_NO_VIRTUALIZE(function()
 
 		bannedAnims = loaded
 		persistedHitboxLearning = loadedHitbox
+		clearHitboxStateCache()
 
 		for aid in next, loaded do
 			observedAnims[aid] = nil
@@ -765,6 +771,10 @@ return LPH_NO_VIRTUALIZE(function()
 			hitOffset = localOffsetFromAttacker(candidate.entity),
 		})
 
+			if typeof(b.pressSamples[#b.pressSamples].hitOffset) == "Vector3" then
+				invalidateHitboxState(candidate.aid)
+			end
+
 		if pendingPress then
 			pendingPress.resolved = true
 		end
@@ -798,6 +808,10 @@ return LPH_NO_VIRTUALIZE(function()
 			t = now,
 			hitOffset = localOffsetFromAttacker(candidate.entity),
 		})
+
+		if typeof(b.hitSamples[#b.hitSamples].hitOffset) == "Vector3" then
+			invalidateHitboxState(candidate.aid)
+		end
 	end
 
 	---Attach a HealthChanged listener to the local humanoid.
@@ -1156,10 +1170,15 @@ return LPH_NO_VIRTUALIZE(function()
 	---@param aid string
 	---@return table
 	local function solveLiveHitboxState(aid)
+		local version = hitboxStateVersions[aid] or 0
+		local cached = hitboxStateCache[aid]
+		if cached and cached.version == version then
+			return cached.state
+		end
+
 		local learnedSamples = mergedHitboxSamples(aid, samples[aid])
 		local hitbox, hitboxOffset, hitboxSamples, hitboxRecentRequired, hitboxRecentSampleCount = solveHitboxShape(learnedSamples)
-
-		return {
+		local state = {
 			samples = learnedSamples,
 			hitbox = hitbox,
 			hitboxOffset = hitboxOffset,
@@ -1167,6 +1186,13 @@ return LPH_NO_VIRTUALIZE(function()
 			hitboxRecentRequired = hitboxRecentRequired,
 			hitboxRecentSampleCount = hitboxRecentSampleCount,
 		}
+
+		hitboxStateCache[aid] = {
+			version = version,
+			state = state,
+		}
+
+		return state
 	end
 
 	---Return whether the learned hitbox is ready to override the base rectangle.
@@ -1629,6 +1655,7 @@ return LPH_NO_VIRTUALIZE(function()
 	---Clear all state.
 	function TimingHarvester.clear()
 		samples = {}
+		clearHitboxStateCache()
 		recentAnims = {}
 		pendingPress = nil
 		Logger.notify("[Harvester] Cleared all harvested samples.")
@@ -1640,6 +1667,7 @@ return LPH_NO_VIRTUALIZE(function()
 		observedAnims = {}
 		bannedAnims = {}
 		persistedHitboxLearning = {}
+		clearHitboxStateCache()
 		recentAnims = {}
 		pendingPress = nil
 		Logger.notify("[Harvester] Reset all harvester data.")
@@ -1687,6 +1715,7 @@ return LPH_NO_VIRTUALIZE(function()
 		observedAnims = {}
 		bannedAnims = {}
 		persistedHitboxLearning = {}
+		clearHitboxStateCache()
 		recentAnims = {}
 		pendingPress = nil
 		isInit = false

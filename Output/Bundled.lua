@@ -7518,8 +7518,8 @@ __bundle_register("Game/Timings/Action", function(require, _LOADED, __bundle_reg
 local Action = {}
 Action.__index = Action
 
--- Services.
-local stats = game:GetService("Stats")
+---@module Utility.NetworkLatency
+local NetworkLatency = require("Utility/NetworkLatency")
 
 -- Constants.
 local PROFILE_MERGE_THRESHOLD_MS = 30
@@ -7527,29 +7527,7 @@ local PROFILE_MERGE_THRESHOLD_MS = 30
 ---Get the current full RTT in milliseconds.
 ---@return number?
 local function currentPingMs()
-	local network = stats:FindFirstChild("Network")
-	if not network then
-		return nil
-	end
-
-	local serverStatsItem = network:FindFirstChild("ServerStatsItem")
-	if not serverStatsItem then
-		return nil
-	end
-
-	local dataPing = serverStatsItem:FindFirstChild("Data Ping")
-	if not dataPing then
-		return nil
-	end
-
-	local ok, value = pcall(function()
-		return dataPing:GetValue()
-	end)
-	if not ok or type(value) ~= "number" then
-		return nil
-	end
-
-	return value
+	return NetworkLatency.rttMilliseconds()
 end
 
 ---Return the closest stored ping profile for the current RTT.
@@ -7801,6 +7779,115 @@ end
 -- Return Action module.
 return Action
 
+end)
+__bundle_register("Utility/NetworkLatency", function(require, _LOADED, __bundle_register, __bundle_modules)
+local NetworkLatency = {}
+
+-- Services.
+local stats = game:GetService("Stats")
+
+-- Constants.
+local MAX_SAMPLES = 12
+local REFRESH_INTERVAL_S = 0.05
+local EMA_ALPHA = 0.35
+
+-- State.
+local samples = {}
+local emaMs = nil
+local lastRefreshAt = 0
+
+---Read the raw Roblox data ping value in milliseconds.
+---@return number?
+local function rawPingMs()
+	local network = stats:FindFirstChild("Network")
+	if not network then
+		return nil
+	end
+
+	local serverStatsItem = network:FindFirstChild("ServerStatsItem")
+	if not serverStatsItem then
+		return nil
+	end
+
+	local dataPingItem = serverStatsItem:FindFirstChild("Data Ping")
+	if not dataPingItem then
+		return nil
+	end
+
+	local ok, value = pcall(function()
+		return dataPingItem:GetValue()
+	end)
+	if not ok or type(value) ~= "number" then
+		return nil
+	end
+
+	return value
+end
+
+---Median of a numeric list.
+---@param values number[]
+---@return number?
+local function median(values)
+	if #values == 0 then
+		return nil
+	end
+
+	local sorted = table.clone(values)
+	table.sort(sorted)
+	return sorted[math.ceil(#sorted / 2)]
+end
+
+---Refresh the rolling ping state at most once per interval.
+local function refresh()
+	local now = os.clock()
+	if (now - lastRefreshAt) < REFRESH_INTERVAL_S then
+		return
+	end
+
+	lastRefreshAt = now
+
+	local raw = rawPingMs()
+	if type(raw) ~= "number" then
+		return
+	end
+
+	samples[#samples + 1] = raw
+	while #samples > MAX_SAMPLES do
+		table.remove(samples, 1)
+	end
+
+	emaMs = emaMs and (emaMs + ((raw - emaMs) * EMA_ALPHA)) or raw
+end
+
+---Return the smoothed full RTT in milliseconds.
+---@return number
+function NetworkLatency.rttMilliseconds()
+	refresh()
+
+	local raw = rawPingMs()
+	local medianMs = median(samples)
+	if type(medianMs) ~= "number" and type(raw) == "number" then
+		return raw
+	end
+
+	if type(medianMs) ~= "number" then
+		return 0
+	end
+
+	if type(emaMs) ~= "number" then
+		return medianMs
+	end
+
+	return math.max(0, (medianMs * 0.7) + (emaMs * 0.3))
+end
+
+---Return the smoothed full RTT in seconds.
+---@return number
+function NetworkLatency.rttSeconds()
+	return NetworkLatency.rttMilliseconds() * 0.001
+end
+
+return NetworkLatency
 end)
 __bundle_register("Game/Timings/PartTiming", function(require, _LOADED, __bundle_register, __bundle_modules)
 ---@module Game.Timings.Timing
@@ -9977,9 +10064,11 @@ return LPH_NO_VIRTUALIZE(function()
 	---@module Utility.Configuration
 	local Configuration = require("Utility/Configuration")
 
+	---@module Utility.NetworkLatency
+	local NetworkLatency = require("Utility/NetworkLatency")
+
 	-- Services.
 	local players = game:GetService("Players")
-	local stats = game:GetService("Stats")
 
 	-- State.
 	local harvesterMaid = Maid.new()
@@ -10008,6 +10097,10 @@ return LPH_NO_VIRTUALIZE(function()
 	-- Key: animation ID, Value: { entityName = string, samples = { { t, when, x, y, z } } }
 	local persistedHitboxLearning = {}
 
+	-- Per-animation cache for solved live hitbox state.
+	local hitboxStateVersions = {}
+	local hitboxStateCache = {}
+
 	-- Tuning constants.
 	local MAX_RECENT_ANIMS = 24
 	local ANIM_LOOKBACK_S = 2.0
@@ -10033,6 +10126,23 @@ return LPH_NO_VIRTUALIZE(function()
 	local HITBOX_MOTION_NEIGHBORS = 5
 	local HITBOX_MOTION_WEIGHT_FLOOR = 0.02
 	local HITBOX_SHRINK_TOLERANCE = Vector3.new(0.5, 0.5, 1)
+
+	---Invalidate cached hitbox state for an animation id.
+	---@param aid string?
+	local function invalidateHitboxState(aid)
+		if type(aid) ~= "string" or aid == "" then
+			return
+		end
+
+		hitboxStateVersions[aid] = (hitboxStateVersions[aid] or 0) + 1
+		hitboxStateCache[aid] = nil
+	end
+
+	---Clear all cached hitbox state.
+	local function clearHitboxStateCache()
+		hitboxStateVersions = {}
+		hitboxStateCache = {}
+	end
 
 	---Get the display label for an entity inside the harvester.
 	---@param entity Model?
@@ -10263,25 +10373,7 @@ return LPH_NO_VIRTUALIZE(function()
 	---Get full RTT in seconds from Stats.Network.ServerStatsItem."Data Ping" (ms).
 	---@return number
 	local function rttSeconds()
-		local network = stats:FindFirstChild("Network")
-		if not network then
-			return 0
-		end
-
-		local serverStatsItem = network:FindFirstChild("ServerStatsItem")
-		if not serverStatsItem then
-			return 0
-		end
-
-		local dataPing = serverStatsItem:FindFirstChild("Data Ping")
-		if not dataPing then
-			return 0
-		end
-
-		local ok, v = pcall(function()
-			return dataPing:GetValue()
-		end)
-		return (ok and type(v) == "number") and (v * 0.001) or 0
+		return NetworkLatency.rttSeconds()
 	end
 
 	---Is the harvester enabled via config toggle?
@@ -10638,6 +10730,7 @@ return LPH_NO_VIRTUALIZE(function()
 
 		bannedAnims = loaded
 		persistedHitboxLearning = loadedHitbox
+		clearHitboxStateCache()
 
 		for aid in next, loaded do
 			observedAnims[aid] = nil
@@ -10727,6 +10820,10 @@ return LPH_NO_VIRTUALIZE(function()
 			hitOffset = localOffsetFromAttacker(candidate.entity),
 		})
 
+			if typeof(b.pressSamples[#b.pressSamples].hitOffset) == "Vector3" then
+				invalidateHitboxState(candidate.aid)
+			end
+
 		if pendingPress then
 			pendingPress.resolved = true
 		end
@@ -10760,6 +10857,10 @@ return LPH_NO_VIRTUALIZE(function()
 			t = now,
 			hitOffset = localOffsetFromAttacker(candidate.entity),
 		})
+
+		if typeof(b.hitSamples[#b.hitSamples].hitOffset) == "Vector3" then
+			invalidateHitboxState(candidate.aid)
+		end
 	end
 
 	---Attach a HealthChanged listener to the local humanoid.
@@ -11118,10 +11219,15 @@ return LPH_NO_VIRTUALIZE(function()
 	---@param aid string
 	---@return table
 	local function solveLiveHitboxState(aid)
+		local version = hitboxStateVersions[aid] or 0
+		local cached = hitboxStateCache[aid]
+		if cached and cached.version == version then
+			return cached.state
+		end
+
 		local learnedSamples = mergedHitboxSamples(aid, samples[aid])
 		local hitbox, hitboxOffset, hitboxSamples, hitboxRecentRequired, hitboxRecentSampleCount = solveHitboxShape(learnedSamples)
-
-		return {
+		local state = {
 			samples = learnedSamples,
 			hitbox = hitbox,
 			hitboxOffset = hitboxOffset,
@@ -11129,6 +11235,13 @@ return LPH_NO_VIRTUALIZE(function()
 			hitboxRecentRequired = hitboxRecentRequired,
 			hitboxRecentSampleCount = hitboxRecentSampleCount,
 		}
+
+		hitboxStateCache[aid] = {
+			version = version,
+			state = state,
+		}
+
+		return state
 	end
 
 	---Return whether the learned hitbox is ready to override the base rectangle.
@@ -11591,6 +11704,7 @@ return LPH_NO_VIRTUALIZE(function()
 	---Clear all state.
 	function TimingHarvester.clear()
 		samples = {}
+		clearHitboxStateCache()
 		recentAnims = {}
 		pendingPress = nil
 		Logger.notify("[Harvester] Cleared all harvested samples.")
@@ -11602,6 +11716,7 @@ return LPH_NO_VIRTUALIZE(function()
 		observedAnims = {}
 		bannedAnims = {}
 		persistedHitboxLearning = {}
+		clearHitboxStateCache()
 		recentAnims = {}
 		pendingPress = nil
 		Logger.notify("[Harvester] Reset all harvester data.")
@@ -11649,6 +11764,7 @@ return LPH_NO_VIRTUALIZE(function()
 		observedAnims = {}
 		bannedAnims = {}
 		persistedHitboxLearning = {}
+		clearHitboxStateCache()
 		recentAnims = {}
 		pendingPress = nil
 		isInit = false
@@ -12422,6 +12538,9 @@ HitboxOptions.__index = HitboxOptions
 -- Services.
 local players = game:GetService("Players")
 
+---@module Features.Combat.PositionHistory
+local PositionHistory = require("Features/Combat/PositionHistory")
+
 ---Return the best action time-position available for adaptive hitbox lookup.
 ---@param action Action?
 ---@return number?
@@ -12458,6 +12577,43 @@ local function timingId(timing)
 	end
 
 	return nil
+end
+
+---Return the humanoid driving the extrapolated entity, if any.
+---@param entity Model?
+---@return Humanoid?
+local function entityHumanoid(entity)
+	if typeof(entity) ~= "Instance" then
+		return nil
+	end
+
+	return entity:IsA("Model") and entity:FindFirstChildWhichIsA("Humanoid") or nil
+end
+
+---Return the acceleration we should apply during prediction.
+---@param entity Model?
+---@return Vector3
+local function predictionAcceleration(entity)
+	local humanoid = entityHumanoid(entity)
+	if not humanoid then
+		return Vector3.zero
+	end
+
+	if humanoid.FloorMaterial ~= Enum.Material.Air then
+		return Vector3.zero
+	end
+
+	local ok, state = pcall(humanoid.GetState, humanoid)
+	if ok then
+		if state == Enum.HumanoidStateType.Climbing
+			or state == Enum.HumanoidStateType.Seated
+			or state == Enum.HumanoidStateType.Swimming
+		then
+			return Vector3.zero
+		end
+	end
+
+	return Vector3.new(0, -workspace.Gravity, 0)
 end
 
 ---Hit color.
@@ -12591,8 +12747,16 @@ HitboxOptions.extrapolate = LPH_NO_VIRTUALIZE(function(self)
 		return error("HitboxOptions.extrapolate - no predicted time specified")
 	end
 
-	-- Return the extrapolated position.
-	local predicted = self.part.CFrame + (self.part.AssemblyLinearVelocity * self.ptime)
+	local current = self.part.CFrame
+	local acceleration = predictionAcceleration(self.entity)
+	local displacement = (self.part.AssemblyLinearVelocity * self.ptime) + (acceleration * (0.5 * self.ptime * self.ptime))
+	local predicted = CFrame.new(current.Position + displacement) * current.Rotation
+
+	local yawRate = self.entity and PositionHistory.yrate(self.entity) or nil
+	if type(yawRate) == "number" and yawRate == yawRate then
+		predicted = predicted * CFrame.Angles(0, yawRate * self.ptime, 0)
+	end
+
 	local hitboxOffset = self:hitboxOffset()
 	if hitboxOffset.Magnitude > 0 then
 		predicted = predicted * CFrame.new(hitboxOffset)
@@ -12731,6 +12895,9 @@ local InputClient = require("Game/InputClient")
 
 ---@module Features.Combat.AttributeListener
 local AttributeListener = require("Features/Combat/AttributeListener")
+
+---@module Utility.NetworkLatency
+local NetworkLatency = require("Utility/NetworkLatency")
 
 ---@module Game.Keybinding
 local Keybinding = require("Game/Keybinding")
@@ -13191,22 +13358,7 @@ end
 ---@todo: For every usage, the sending delay needs to be continously updated. The receiving one must be calculated once at initial send for AP ping compensation.
 ---@return number
 function Defender.rtt()
-	local network = stats:FindFirstChild("Network")
-	if not network then
-		return
-	end
-
-	local serverStatsItem = network:FindFirstChild("ServerStatsItem")
-	if not serverStatsItem then
-		return
-	end
-
-	local dataPingItem = serverStatsItem:FindFirstChild("Data Ping")
-	if not dataPingItem then
-		return
-	end
-
-	return (dataPingItem:GetValue() / 1000)
+	return NetworkLatency.rttSeconds()
 end
 
 ---Repeat conditional.
@@ -13221,6 +13373,30 @@ Defender.rc = LPH_NO_VIRTUALIZE(function(self, info)
 	return true
 end)
 
+---Cheap conservative hitbox distance gate before running physics overlap checks.
+---@param options HitboxOptions
+---@return boolean
+local function coarseHitboxCandidate(options)
+	local character = players.LocalPlayer.Character
+	if not character then
+		return false
+	end
+
+	local root = character:FindFirstChild("HumanoidRootPart")
+	if not root then
+		return false
+	end
+
+	local hitbox = options:hitbox()
+	local position = options:pos()
+	if options:facingHitbox() then
+		position = position * CFrame.new(0, 0, -(hitbox.Z / 2))
+	end
+
+	local maxReach = (hitbox.Magnitude * 0.5) + (root.Size.Magnitude * 0.5) + 2
+	return (position.Position - root.Position).Magnitude <= maxReach
+end
+
 ---Handle delay until in hitbox.
 ---@param self Defender
 ---@param options HitboxOptions
@@ -13233,6 +13409,10 @@ Defender.duih = LPH_NO_VIRTUALIZE(function(self, options, info)
 	while task.wait() do
 		if not self:rc(info) then
 			return false
+		end
+
+		if not coarseHitboxCandidate(clone) then
+			continue
 		end
 
 		if not self:hc(clone, nil) then
