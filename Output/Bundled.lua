@@ -21025,6 +21025,22 @@ return LPH_NO_VIRTUALIZE(function()
 		return trimmed ~= "" and trimmed or "Unknown Group"
 	end
 
+	local function previewEntityContainers()
+		local containers = {}
+		local entities = workspace:FindFirstChild("Entities")
+		local live = workspace:FindFirstChild("Live")
+
+		if entities then
+			table.insert(containers, entities)
+		end
+
+		if live and live ~= entities then
+			table.insert(containers, live)
+		end
+
+		return containers
+	end
+
 	local function sortStrings(values)
 		table.sort(values, function(left, right)
 			return lowerKey(left) < lowerKey(right)
@@ -21150,14 +21166,8 @@ return LPH_NO_VIRTUALIZE(function()
 	end
 
 	local function findLiveModel(groupName)
-		local live = workspace:FindFirstChild("Live")
-		if not live or type(groupName) ~= "string" or #groupName <= 0 then
+		if type(groupName) ~= "string" or #groupName <= 0 then
 			return nil
-		end
-
-		local exact = live:FindFirstChild(groupName)
-		if typeof(exact) == "Instance" and exact:IsA("Model") then
-			return exact
 		end
 
 		local normalizedWanted = normalizedGroupName(groupName)
@@ -21166,15 +21176,22 @@ return LPH_NO_VIRTUALIZE(function()
 		end
 
 		local partial = nil
-		for _, child in ipairs(live:GetChildren()) do
-			if child:IsA("Model") then
-				local normalizedChild = normalizedGroupName(child.Name)
-				if normalizedChild == normalizedWanted then
-					return child
-				end
+		for _, container in ipairs(previewEntityContainers()) do
+			local exact = container:FindFirstChild(groupName)
+			if typeof(exact) == "Instance" and exact:IsA("Model") then
+				return exact
+			end
 
-				if not partial and (string.find(normalizedChild, normalizedWanted, 1, true) or string.find(normalizedWanted, normalizedChild, 1, true)) then
-					partial = child
+			for _, child in ipairs(container:GetChildren()) do
+				if child:IsA("Model") then
+					local normalizedChild = normalizedGroupName(child.Name)
+					if normalizedChild == normalizedWanted then
+						return child
+					end
+
+					if not partial and (string.find(normalizedChild, normalizedWanted, 1, true) or string.find(normalizedWanted, normalizedChild, 1, true)) then
+						partial = child
+					end
 				end
 			end
 		end
