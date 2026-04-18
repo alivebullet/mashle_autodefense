@@ -21109,19 +21109,57 @@ return LPH_NO_VIRTUALIZE(function()
 		return partial
 	end
 
-	local function previewSourceForTiming(timing, groupName)
-		local liveModel = findLiveModel(groupName)
-		if liveModel then
-			return liveModel
+	local function appendPreviewCandidate(candidates, seen, candidate)
+		if typeof(candidate) ~= "Instance" or not candidate:IsA("Model") or not candidate.Parent then
+			return
 		end
+
+		if seen[candidate] then
+			return
+		end
+
+		seen[candidate] = true
+		table.insert(candidates, candidate)
+	end
+
+	local function previewCandidatesForTiming(timing, groupName)
+		local candidates = {}
+		local seen = {}
+
+		appendPreviewCandidate(candidates, seen, findLiveModel(groupName))
+		appendPreviewCandidate(candidates, seen, findLiveModel(derivedGroupName(timing)))
 
 		local aid = timingAid(timing)
 		local previewSource = aid and AnimationLogger.getPreviewSource(aid) or nil
-		if typeof(previewSource) == "Instance" and previewSource:IsA("Model") and previewSource.Parent then
-			return previewSource
+		appendPreviewCandidate(candidates, seen, previewSource)
+		appendPreviewCandidate(candidates, seen, localCharacterModel())
+
+		return candidates
+	end
+
+	local function ensureAnimator(model)
+		local animator = model and model:FindFirstChildWhichIsA("Animator", true) or nil
+		if animator then
+			return animator
 		end
 
-		return localCharacterModel()
+		local controller = model and model:FindFirstChildWhichIsA("AnimationController", true) or nil
+		local humanoid = model and model:FindFirstChildWhichIsA("Humanoid", true) or nil
+		local host = humanoid or controller
+		if not host and model then
+			host = Instance.new("AnimationController")
+			host.Name = "PreviewAnimationController"
+			host.Parent = model
+		end
+
+		if not host then
+			return nil
+		end
+
+		animator = Instance.new("Animator")
+		animator.Name = "PreviewAnimator"
+		animator.Parent = host
+		return animator
 	end
 
 	local function cloneModel(sourceModel)
@@ -21297,29 +21335,7 @@ return LPH_NO_VIRTUALIZE(function()
 		currentTrack = nil
 		previewTiming = state.selectedTiming
 		isPaused = false
-
-		local sourceModel = previewSourceForTiming(state.selectedTiming, state.selectedNpc)
-		if not sourceModel then
-			setPreviewMessage("No preview source is available for this animation yet.")
-			refreshMarkers()
-			return
-		end
-
-		local clone = fillViewport(previewViewport, previewWorldModel, previewCamera, sourceModel)
-		if not clone then
-			setPreviewMessage("Failed to clone preview model.")
-			refreshMarkers()
-			return
-		end
-
-		previewMaid:add(clone)
-
-		local animator = clone:FindFirstChildWhichIsA("Animator", true)
-		if not animator then
-			setPreviewMessage("Preview model has no Animator.")
-			refreshMarkers()
-			return
-		end
+		playButton.Text = "Pause"
 
 		local aid = timingAid(state.selectedTiming)
 		if not aid then
@@ -21328,20 +21344,54 @@ return LPH_NO_VIRTUALIZE(function()
 			return
 		end
 
-		local animation = Instance.new("Animation")
-		animation.AnimationId = aid
-		previewMaid:add(animation)
-
-		local ok, track = pcall(function()
-			return animator:LoadAnimation(animation)
-		end)
-		if not ok or not track then
-			setPreviewMessage("Failed to load the selected animation on the preview model.")
+		local candidates = previewCandidatesForTiming(state.selectedTiming, state.selectedNpc)
+		if #candidates == 0 then
+			setPreviewMessage("No preview source is available for this animation yet.")
 			refreshMarkers()
 			return
 		end
 
-		currentTrack = track
+		local loadedClone = nil
+		local loadedAnimation = nil
+		local lastFailure = "Failed to load the selected animation on the preview model."
+		for _, sourceModel in ipairs(candidates) do
+			local clone = fillViewport(previewViewport, previewWorldModel, previewCamera, sourceModel)
+			if clone then
+				local animator = ensureAnimator(clone)
+				if animator then
+					local animation = Instance.new("Animation")
+					animation.AnimationId = aid
+
+					local ok, track = pcall(function()
+						return animator:LoadAnimation(animation)
+					end)
+					if ok and track then
+						loadedClone = clone
+						loadedAnimation = animation
+						currentTrack = track
+						break
+					end
+
+					animation:Destroy()
+					lastFailure = "Failed to load the selected animation on the preview model."
+				else
+					lastFailure = "Preview model has no Animator."
+				end
+
+				clone:Destroy()
+			else
+				lastFailure = "Failed to clone preview model."
+			end
+		end
+
+		if not currentTrack or not loadedClone or not loadedAnimation then
+			setPreviewMessage(lastFailure)
+			refreshMarkers()
+			return
+		end
+
+		previewMaid:add(loadedClone)
+		previewMaid:add(loadedAnimation)
 		currentTrack.Priority = Enum.AnimationPriority.Action
 		currentTrack.Looped = true
 		currentTrack:Play(0.0, 100, 1.0)
