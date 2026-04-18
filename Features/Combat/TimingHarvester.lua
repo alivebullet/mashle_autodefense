@@ -42,6 +42,10 @@ return LPH_NO_VIRTUALIZE(function()
 	-- Key: animation ID, Value: { meta = {...}, sampleCount = number, seenCount = number }
 	local bannedAnims = {}
 
+	-- Persisted damage-based hitbox learning loaded from the active config metadata.
+	-- Key: animation ID, Value: { entityName = string, samples = { { t, when, x, y, z } } }
+	local persistedHitboxLearning = {}
+
 	-- Tuning constants.
 	local MAX_RECENT_ANIMS = 24
 	local ANIM_LOOKBACK_S = 2.0
@@ -58,6 +62,7 @@ return LPH_NO_VIRTUALIZE(function()
 	local HITBOX_MIN_EXTENT = Vector3.new(6, 6, 8)
 	local HITBOX_MAX_EXTENT = Vector3.new(40, 30, 50)
 	local MIN_HITBOX_SAMPLES = 3
+	local MAX_PERSISTED_HITBOX_SAMPLES = 96
 
 	---Get the display label for an entity inside the harvester.
 	---@param entity Model?
@@ -89,6 +94,60 @@ return LPH_NO_VIRTUALIZE(function()
 			},
 			sampleCount = type(info) == "table" and type(info.sampleCount) == "number" and info.sampleCount or 0,
 			seenCount = type(info) == "table" and type(info.seenCount) == "number" and info.seenCount or 0,
+		}
+	end
+
+	---Create a serializable hitbox sample entry.
+	---@param info table?
+	---@return table?
+	local function persistentHitboxSample(info)
+		if type(info) ~= "table" then
+			return nil
+		end
+
+		local x = type(info.x) == "number" and info.x or nil
+		local y = type(info.y) == "number" and info.y or nil
+		local z = type(info.z) == "number" and info.z or nil
+		if x == nil or y == nil or z == nil then
+			return nil
+		end
+
+		return {
+			t = type(info.t) == "number" and info.t or 0,
+			when = type(info.when) == "number" and info.when or 0,
+			x = x,
+			y = y,
+			z = z,
+		}
+	end
+
+	---Create a serializable hitbox learning entry.
+	---@param aid string
+	---@param info table?
+	---@return table
+	local function persistentHitboxLearningEntry(aid, info)
+		local samplesOut = {}
+		local sourceSamples = type(info) == "table" and type(info.samples) == "table" and info.samples or {}
+
+		for _, sample in ipairs(sourceSamples) do
+			local normalized = persistentHitboxSample(sample)
+			if normalized then
+				table.insert(samplesOut, normalized)
+			end
+		end
+
+		table.sort(samplesOut, function(lhs, rhs)
+			return (lhs.t or 0) < (rhs.t or 0)
+		end)
+
+		while #samplesOut > MAX_PERSISTED_HITBOX_SAMPLES do
+			table.remove(samplesOut, 1)
+		end
+
+		return {
+			aid = aid,
+			entityName = type(info) == "table" and type(info.entityName) == "string" and info.entityName or "?",
+			samples = samplesOut,
 		}
 	end
 
@@ -428,6 +487,7 @@ return LPH_NO_VIRTUALIZE(function()
 
 		samples[aid] = nil
 		observedAnims[aid] = nil
+		persistedHitboxLearning[aid] = nil
 		pruneRecent(aid)
 
 		Logger.notify("[Harvester] Banned '%s' (%s).", entityName, aid)
@@ -478,12 +538,102 @@ return LPH_NO_VIRTUALIZE(function()
 	---@return table
 	function TimingHarvester.serializePersistentState()
 		local out = {}
+		local hitboxOut = {}
+		local seen = {}
+
 		for aid, info in next, bannedAnims do
 			out[aid] = persistentBannedEntry(aid, info)
 		end
 
+		for aid in next, persistedHitboxLearning do
+			seen[aid] = true
+		end
+
+		for aid in next, samples do
+			seen[aid] = true
+		end
+
+		for aid in next, seen do
+			local mergedSamples = nil
+			local bucket = samples[aid]
+			local persisted = persistedHitboxLearning[aid]
+			local entityName = (bucket and bucket.meta and bucket.meta.entityName)
+				or (persisted and persisted.entityName)
+				or "?"
+
+			local function sampleKey(sample)
+				return string.format(
+					"%d:%d:%d:%d:%d",
+					math.round((sample.t or 0) * 1000),
+					math.round((sample.when or 0) * 1000),
+					math.round((sample.x or 0) * 100),
+					math.round((sample.y or 0) * 100),
+					math.round((sample.z or 0) * 100)
+				)
+			end
+
+			local function mergeSamples()
+				local merged, dedupe = {}, {}
+
+				local function pushSample(sample)
+					local normalized = persistentHitboxSample(sample)
+					if not normalized then
+						return
+					end
+
+					local key = sampleKey(normalized)
+					if dedupe[key] then
+						return
+					end
+
+					dedupe[key] = true
+					table.insert(merged, normalized)
+				end
+
+				if type(persisted) == "table" and type(persisted.samples) == "table" then
+					for _, sample in ipairs(persisted.samples) do
+						pushSample(sample)
+					end
+				end
+
+				if type(bucket) == "table" and type(bucket.hitSamples) == "table" then
+					for _, sample in ipairs(bucket.hitSamples) do
+						local offset = sample and sample.hitOffset
+						if typeof(offset) == "Vector3" then
+							pushSample({
+								t = sample.t,
+								when = sample.when,
+								x = offset.X,
+								y = offset.Y,
+								z = offset.Z,
+							})
+						end
+					end
+				end
+
+				table.sort(merged, function(lhs, rhs)
+					return (lhs.t or 0) < (rhs.t or 0)
+				end)
+
+				while #merged > MAX_PERSISTED_HITBOX_SAMPLES do
+					table.remove(merged, 1)
+				end
+
+				return merged
+			end
+
+			mergedSamples = mergeSamples()
+			if #mergedSamples > 0 then
+				hitboxOut[aid] = persistentHitboxLearningEntry(aid, {
+					entityName = entityName,
+					samples = mergedSamples,
+				})
+			end
+		end
+
 		return {
 			bannedAnims = out,
+			hitboxLearning = hitboxOut,
 		}
 	end
 
@@ -491,6 +641,7 @@ return LPH_NO_VIRTUALIZE(function()
 	---@param state table?
 	function TimingHarvester.loadPersistentState(state)
 		local loaded = {}
+		local loadedHitbox = {}
 		if type(state) == "table" and type(state.bannedAnims) == "table" then
 			for aid, info in next, state.bannedAnims do
 				if type(aid) == "string" and aid ~= "" then
@@ -499,7 +650,19 @@ return LPH_NO_VIRTUALIZE(function()
 			end
 		end
 
+		if type(state) == "table" and type(state.hitboxLearning) == "table" then
+			for aid, info in next, state.hitboxLearning do
+				if type(aid) == "string" and aid ~= "" then
+					local entry = persistentHitboxLearningEntry(aid, info)
+					if #entry.samples > 0 then
+						loadedHitbox[aid] = entry
+					end
+				end
+			end
+		end
+
 		bannedAnims = loaded
+		persistedHitboxLearning = loadedHitbox
 
 		for aid in next, loaded do
 			observedAnims[aid] = nil
@@ -671,6 +834,130 @@ return LPH_NO_VIRTUALIZE(function()
 		return s[idx]
 	end
 
+	---Generate a de-duplication key for a hitbox sample.
+	---@param sample table
+	---@return string
+	local function hitboxSampleKey(sample)
+		return string.format(
+			"%d:%d:%d:%d:%d",
+			math.round((sample.t or 0) * 1000),
+			math.round((sample.when or 0) * 1000),
+			math.round((sample.x or 0) * 100),
+			math.round((sample.y or 0) * 100),
+			math.round((sample.z or 0) * 100)
+		)
+	end
+
+	---Normalize a runtime damage sample into a serializable hitbox sample.
+	---@param sample table?
+	---@return table?
+	local function runtimeHitboxSample(sample)
+		if type(sample) ~= "table" then
+			return nil
+		end
+
+		local offset = sample.hitOffset
+		if typeof(offset) ~= "Vector3" then
+			return nil
+		end
+
+		return persistentHitboxSample({
+			t = sample.t,
+			when = sample.when,
+			x = offset.X,
+			y = offset.Y,
+			z = offset.Z,
+		})
+	end
+
+	---Merge persisted damage samples with live damage samples for an animation.
+	---@param aid string
+	---@param bucket table?
+	---@return table[]
+	local function mergedHitboxSamples(aid, bucket)
+		local merged, seen = {}, {}
+		local persisted = persistedHitboxLearning[aid]
+
+		local function pushSample(sample)
+			local normalized = persistentHitboxSample(sample)
+			if not normalized then
+				return
+			end
+
+			local key = hitboxSampleKey(normalized)
+			if seen[key] then
+				return
+			end
+
+			seen[key] = true
+			table.insert(merged, normalized)
+		end
+
+		if type(persisted) == "table" and type(persisted.samples) == "table" then
+			for _, sample in ipairs(persisted.samples) do
+				pushSample(sample)
+			end
+		end
+
+		if type(bucket) == "table" and type(bucket.hitSamples) == "table" then
+			for _, sample in ipairs(bucket.hitSamples) do
+				pushSample(runtimeHitboxSample(sample))
+			end
+		end
+
+		table.sort(merged, function(lhs, rhs)
+			return (lhs.t or 0) < (rhs.t or 0)
+		end)
+
+		while #merged > MAX_PERSISTED_HITBOX_SAMPLES do
+			table.remove(merged, 1)
+		end
+
+		return merged
+	end
+
+	---Solve a signed hitbox size and center offset from attacker-local damage samples.
+	---@param samplesIn table[]
+	---@return Vector3?, Vector3?, number
+	local function solveHitboxShape(samplesIn)
+		local sampleCount = #samplesIn
+		if sampleCount < MIN_HITBOX_SAMPLES then
+			return nil, nil, sampleCount
+		end
+
+		local xs, ys, zs = {}, {}, {}
+		for _, sample in ipairs(samplesIn) do
+			table.insert(xs, sample.x)
+			table.insert(ys, sample.y)
+			table.insert(zs, sample.z)
+		end
+
+		---@param axisSamples number[]
+		---@param padFull number
+		---@param minExtent number
+		---@param maxExtent number
+		---@return number, number
+		local function axisShape(axisSamples, padFull, minExtent, maxExtent)
+			local lo = percentile(axisSamples, 1 - HITBOX_AXIS_PERCENTILE) or 0
+			local hi = percentile(axisSamples, HITBOX_AXIS_PERCENTILE) or 0
+			if hi < lo then
+				lo, hi = hi, lo
+			end
+
+			local full = (hi - lo) + padFull
+			if full < minExtent then full = minExtent end
+			if full > maxExtent then full = maxExtent end
+
+			return full, (lo + hi) * 0.5
+		end
+
+		local sizeX, centerX = axisShape(xs, HITBOX_PAD_WIDTH, HITBOX_MIN_EXTENT.X, HITBOX_MAX_EXTENT.X)
+		local sizeY, centerY = axisShape(ys, HITBOX_PAD_HEIGHT, HITBOX_MIN_EXTENT.Y, HITBOX_MAX_EXTENT.Y)
+		local sizeZ, centerZ = axisShape(zs, HITBOX_PAD_DEPTH, HITBOX_MIN_EXTENT.Z, HITBOX_MAX_EXTENT.Z)
+
+		return Vector3.new(sizeX, sizeY, sizeZ), Vector3.new(centerX, centerY, centerZ), sampleCount
+	end
+
 	---Pick a slightly early timing inside a solved success window.
 	---@param lo number?
 	---@param hi number?
@@ -693,16 +980,6 @@ return LPH_NO_VIRTUALIZE(function()
 		end
 
 		local perfectWhens, parryWhens, failWhens, hitWhens, distances, pings = {}, {}, {}, {}, {}, {}
-		local xs, ys, zs = {}, {}, {}
-
-		local function absorbOffset(offset)
-			if typeof(offset) ~= "Vector3" then
-				return
-			end
-			table.insert(xs, math.abs(offset.X))
-			table.insert(ys, math.abs(offset.Y))
-			table.insert(zs, math.abs(offset.Z))
-		end
 
 		for _, s in ipairs(b.pressSamples) do
 			if s.parried then
@@ -710,7 +987,6 @@ return LPH_NO_VIRTUALIZE(function()
 				if s.perfect then
 					table.insert(perfectWhens, s.when)
 				end
-				absorbOffset(s.hitOffset)
 			else
 				table.insert(failWhens, s.when)
 			end
@@ -726,7 +1002,6 @@ return LPH_NO_VIRTUALIZE(function()
 
 		for _, s in ipairs(b.hitSamples) do
 			table.insert(hitWhens, s.when)
-			absorbOffset(s.hitOffset)
 			if s.distance then
 				table.insert(distances, s.distance)
 			end
@@ -742,6 +1017,8 @@ return LPH_NO_VIRTUALIZE(function()
 		local parryHi = percentile(parryWhens, 0.9)
 		local hitLo = percentile(hitWhens, 0.1)
 		local hitHi = percentile(hitWhens, 0.9)
+		local learnedSamples = mergedHitboxSamples(aid, b)
+		local hitbox, hitboxOffset, hitboxSamples = solveHitboxShape(learnedSamples)
 
 		-- Mashle parry becomes active slightly before impact, so midpoint timings trend late.
 		-- Bias harvested timings toward the early side of successful parry samples.
@@ -758,6 +1035,9 @@ return LPH_NO_VIRTUALIZE(function()
 				parryCount = #parryWhens,
 				failCount = #failWhens,
 				hitCount = #hitWhens,
+				hitbox = hitbox,
+				hitboxOffset = hitboxOffset,
+				hitboxSamples = hitboxSamples,
 				bestWhen = nil,
 			}
 		end
@@ -770,28 +1050,6 @@ return LPH_NO_VIRTUALIZE(function()
 				if d < minDist then minDist = d end
 				if d > maxDist then maxDist = d end
 			end
-		end
-
-		---@param axisSamples number[]
-		---@param padFull number full-extent pad added after symmetric doubling
-		---@param minExtent number minimum full-extent floor
-		---@param maxExtent number maximum full-extent ceiling
-		---@return number
-		local function axisExtent(axisSamples, padFull, minExtent, maxExtent)
-			local half = percentile(axisSamples, HITBOX_AXIS_PERCENTILE) or 0
-			local full = half * 2 + padFull
-			if full < minExtent then full = minExtent end
-			if full > maxExtent then full = maxExtent end
-			return full
-		end
-
-		local hitbox, hitboxSamples = nil, #xs
-		if hitboxSamples >= MIN_HITBOX_SAMPLES then
-			hitbox = Vector3.new(
-				axisExtent(xs, HITBOX_PAD_WIDTH, HITBOX_MIN_EXTENT.X, HITBOX_MAX_EXTENT.X),
-				axisExtent(ys, HITBOX_PAD_HEIGHT, HITBOX_MIN_EXTENT.Y, HITBOX_MAX_EXTENT.Y),
-				axisExtent(zs, HITBOX_PAD_DEPTH, HITBOX_MIN_EXTENT.Z, HITBOX_MAX_EXTENT.Z)
-			)
 		end
 
 		return {
@@ -819,6 +1077,7 @@ return LPH_NO_VIRTUALIZE(function()
 			minDistance = minDist,
 			maxDistance = maxDist,
 			hitbox = hitbox,
+			hitboxOffset = hitboxOffset,
 			hitboxSamples = hitboxSamples,
 			-- Confidence scales with successful parry count.
 			confidence = math.min(1.0, (#perfectWhens + #parryWhens) / 8),
@@ -939,18 +1198,21 @@ return LPH_NO_VIRTUALIZE(function()
 
 		local defaultHitbox = Vector3.new(20, 20, 30)
 		local learnedHitbox = solved.hitbox
-		local function expandHitbox(current)
-			if typeof(current) ~= "Vector3" then
-				return learnedHitbox or defaultHitbox
+		local learnedHitboxOffset = solved.hitboxOffset
+
+		local function applyLearnedShape(target)
+			if typeof(learnedHitbox) ~= "Vector3" or typeof(learnedHitboxOffset) ~= "Vector3" then
+				return false
 			end
-			if not learnedHitbox then
-				return current
+
+			target.hitbox = learnedHitbox
+			target.hitboxOffset = learnedHitboxOffset
+
+			if target.fhb ~= nil then
+				target.fhb = false
 			end
-			return Vector3.new(
-				math.max(current.X, learnedHitbox.X),
-				math.max(current.Y, learnedHitbox.Y),
-				math.max(current.Z, learnedHitbox.Z)
-			)
+
+			return true
 		end
 
 		if existingConfig then
@@ -959,23 +1221,25 @@ return LPH_NO_VIRTUALIZE(function()
 				action = Action.new()
 				action.name = string.format("Action_Harvested_n%d", solved.sampleCount)
 				action._type = "Parry"
-				action.hitbox = learnedHitbox or defaultHitbox
+				action.hitbox = typeof(existingConfig.hitbox) == "Vector3" and existingConfig.hitbox or defaultHitbox
+				action.hitboxOffset = typeof(existingConfig.hitboxOffset) == "Vector3" and existingConfig.hitboxOffset or Vector3.zero
 				action.ihbc = false
 				existingConfig.actions:push(action)
-			else
-				action.hitbox = expandHitbox(action.hitbox)
 			end
+
+			applyLearnedShape(action)
 
 			action._when = PP_SCRAMBLE_RE_NUM(whenMs)
 			action:addPingProfile(profilePingMs, whenMs, solved.sampleCount)
 
-			existingConfig.hitbox = expandHitbox(existingConfig.hitbox)
+			applyLearnedShape(existingConfig)
 			existingConfig.imdd = math.max(0, math.min(existingConfig.imdd or solved.minDistance, solved.minDistance))
 			existingConfig.imxd = math.max(existingConfig.imxd or solved.maxDistance, solved.maxDistance)
 
 			local hb = existingConfig.hitbox
+			local hbo = existingConfig.hitboxOffset
 			Logger.notify(
-				"[Harvester] Updated '%s' with %.0fms @ %dms RTT (%d profiles) hitbox=(%.1f, %.1f, %.1f) from %d pts.",
+				"[Harvester] Updated '%s' with %.0fms @ %dms RTT (%d profiles) hitbox=(%.1f, %.1f, %.1f) offset=(%.1f, %.1f, %.1f) from %d dmg pts.",
 				existingConfig.name,
 				solved.bestWhen * 1000,
 				profilePingMs,
@@ -983,6 +1247,9 @@ return LPH_NO_VIRTUALIZE(function()
 				(typeof(hb) == "Vector3" and hb.X) or 0,
 				(typeof(hb) == "Vector3" and hb.Y) or 0,
 				(typeof(hb) == "Vector3" and hb.Z) or 0,
+				(typeof(hbo) == "Vector3" and hbo.X) or 0,
+				(typeof(hbo) == "Vector3" and hbo.Y) or 0,
+				(typeof(hbo) == "Vector3" and hbo.Z) or 0,
 				solved.hitboxSamples or 0
 			)
 
@@ -1007,7 +1274,8 @@ return LPH_NO_VIRTUALIZE(function()
 		timing.imdd = math.max(0, math.floor(solved.minDistance - 2))
 		timing.imxd = math.ceil(solved.maxDistance + 5)
 		timing.hitbox = learnedHitbox or defaultHitbox
-		timing.fhb = true
+		timing.hitboxOffset = typeof(learnedHitboxOffset) == "Vector3" and learnedHitboxOffset or Vector3.zero
+		timing.fhb = typeof(learnedHitboxOffset) ~= "Vector3"
 		timing.pfh = true
 		timing.pfht = 0.15
 
@@ -1016,6 +1284,7 @@ return LPH_NO_VIRTUALIZE(function()
 		action._type = "Parry"
 		action._when = PP_SCRAMBLE_RE_NUM(whenMs)
 		action.hitbox = learnedHitbox or defaultHitbox
+		action.hitboxOffset = typeof(learnedHitboxOffset) == "Vector3" and learnedHitboxOffset or Vector3.zero
 		action.ihbc = false
 		action:addPingProfile(profilePingMs, whenMs, solved.sampleCount)
 		timing.actions:push(action)
@@ -1026,8 +1295,9 @@ return LPH_NO_VIRTUALIZE(function()
 		end
 
 		local promotedHb = timing.hitbox
+		local promotedOffset = timing.hitboxOffset
 		Logger.notify(
-			"[Harvester] Promoted '%s' when=%.0fms @ %dms RTT (n=%d perfect=%d parry=%d conf=%.2f) hitbox=(%.1f, %.1f, %.1f) from %d pts.",
+			"[Harvester] Promoted '%s' when=%.0fms @ %dms RTT (n=%d perfect=%d parry=%d conf=%.2f) hitbox=(%.1f, %.1f, %.1f) offset=(%.1f, %.1f, %.1f) from %d dmg pts.",
 			name,
 			solved.bestWhen * 1000,
 			profilePingMs,
@@ -1038,6 +1308,9 @@ return LPH_NO_VIRTUALIZE(function()
 			(typeof(promotedHb) == "Vector3" and promotedHb.X) or 0,
 			(typeof(promotedHb) == "Vector3" and promotedHb.Y) or 0,
 			(typeof(promotedHb) == "Vector3" and promotedHb.Z) or 0,
+			(typeof(promotedOffset) == "Vector3" and promotedOffset.X) or 0,
+			(typeof(promotedOffset) == "Vector3" and promotedOffset.Y) or 0,
+			(typeof(promotedOffset) == "Vector3" and promotedOffset.Z) or 0,
 			solved.hitboxSamples or 0
 		)
 
@@ -1073,6 +1346,7 @@ return LPH_NO_VIRTUALIZE(function()
 		samples = {}
 		observedAnims = {}
 		bannedAnims = {}
+		persistedHitboxLearning = {}
 		recentAnims = {}
 		pendingPress = nil
 		Logger.notify("[Harvester] Reset all harvester data.")
@@ -1119,6 +1393,7 @@ return LPH_NO_VIRTUALIZE(function()
 		samples = {}
 		observedAnims = {}
 		bannedAnims = {}
+		persistedHitboxLearning = {}
 		recentAnims = {}
 		pendingPress = nil
 		isInit = false

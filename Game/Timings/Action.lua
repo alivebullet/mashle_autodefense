@@ -2,6 +2,7 @@
 ---@field _type string
 ---@field _when number When the action will occur in miliseconds. Never access directly.
 ---@field hitbox Vector3 The hitbox of the action.
+---@field hitboxOffset Vector3 Center offset of the hitbox in local space.
 ---@field ihbc boolean Ignore hitbox check.
 ---@field name string The name of the action.
 ---@field pingProfiles table[]? Ping-aware harvested timing profiles: { ping = number, when = number, samples = number }
@@ -139,6 +140,10 @@ function Action:load(values)
 		self.hitbox = Vector3.new(values.hitbox.X, values.hitbox.Y, values.hitbox.Z)
 	end
 
+	if typeof(values.hitboxOffset) == "table" then
+		self.hitboxOffset = Vector3.new(values.hitboxOffset.X or 0, values.hitboxOffset.Y or 0, values.hitboxOffset.Z or 0)
+	end
+
 	if typeof(values.ihbc) == "boolean" then
 		self.ihbc = values.ihbc
 	end
@@ -188,6 +193,10 @@ function Action:equals(other)
 		return false
 	end
 
+	if self.hitboxOffset ~= other.hitboxOffset then
+		return false
+	end
+
 	if self.ihbc ~= other.ihbc then
 		return false
 	end
@@ -222,6 +231,7 @@ function Action:clone()
 	clone._when = self._when
 	clone.name = self.name
 	clone.hitbox = self.hitbox
+	clone.hitboxOffset = self.hitboxOffset
 	clone.ihbc = self.ihbc
 	clone.pingProfiles = {}
 
@@ -248,6 +258,11 @@ function Action:serialize()
 			Y = self.hitbox.Y,
 			Z = self.hitbox.Z,
 		},
+		hitboxOffset = {
+			X = self.hitboxOffset.X,
+			Y = self.hitboxOffset.Y,
+			Z = self.hitboxOffset.Z,
+		},
 		ihbc = self.ihbc,
 			pingProfiles = self.pingProfiles,
 	}
@@ -263,6 +278,7 @@ function Action.new(values)
 	self._when = 0
 	self.name = ""
 	self.hitbox = Vector3.zero
+	self.hitboxOffset = Vector3.zero
 	self.ihbc = false
 	self.pingProfiles = {}
 	self.tp = 0

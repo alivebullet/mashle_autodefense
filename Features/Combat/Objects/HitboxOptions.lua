@@ -66,6 +66,26 @@ function HitboxOptions:hitbox()
 	return hitbox
 end
 
+---Get the hitbox center offset.
+---@return Vector3
+function HitboxOptions:hitboxOffset()
+	local hitboxOffset = self.action and self.action.hitboxOffset or self.timing.hitboxOffset
+
+	if self.timing.duih then
+		hitboxOffset = self.timing.hitboxOffset
+	end
+
+	if typeof(hitboxOffset) ~= "Vector3" then
+		return Vector3.zero
+	end
+
+	return Vector3.new(
+		PP_SCRAMBLE_NUM(hitboxOffset.X),
+		PP_SCRAMBLE_NUM(hitboxOffset.Y),
+		PP_SCRAMBLE_NUM(hitboxOffset.Z)
+	)
+end
+
 ---Get extrapolated position.
 ---@return CFrame
 HitboxOptions.extrapolate = LPH_NO_VIRTUALIZE(function(self)
@@ -88,15 +108,23 @@ end)
 ---Get position.
 ---@return CFrame
 HitboxOptions.pos = LPH_NO_VIRTUALIZE(function(self)
+	local position = nil
 	if self.cframe then
-		return self.cframe
+		position = self.cframe
+	elseif self.part then
+		position = self.part.CFrame
 	end
 
-	if self.part then
-		return self.part.CFrame
+	if not position then
+		return error("HitboxOptions.pos - impossible condition")
 	end
 
-	return error("HitboxOptions.pos - impossible condition")
+	local hitboxOffset = self:hitboxOffset()
+	if hitboxOffset.Magnitude > 0 then
+		position = position * CFrame.new(hitboxOffset)
+	end
+
+	return position
 end)
 
 ---Create new HitboxOptions object.

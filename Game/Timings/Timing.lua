@@ -11,6 +11,7 @@ local ActionContainer = require("Game/Timings/ActionContainer")
 ---@field duih boolean Delay until in hitbox.
 ---@field actions ActionContainer
 ---@field hitbox Vector3
+---@field hitboxOffset Vector3 Local-space center offset for the hitbox.
 ---@field umoa boolean Use module over actions.
 ---@field smn boolean Skip module notification.
 ---@field srpn boolean Skip repeat notification.
@@ -75,6 +76,10 @@ function Timing:load(values)
 
 	if typeof(values.hitbox) == "table" then
 		self.hitbox = Vector3.new(values.hitbox.X or 0, values.hitbox.Y or 0, values.hitbox.Z or 0)
+	end
+
+	if typeof(values.hitboxOffset) == "table" then
+		self.hitboxOffset = Vector3.new(values.hitboxOffset.X or 0, values.hitboxOffset.Y or 0, values.hitboxOffset.Z or 0)
 	end
 
 	if typeof(values.umoa) == "boolean" then
@@ -150,6 +155,10 @@ function Timing:equals(other)
 		return false
 	end
 
+	if self.hitboxOffset ~= other.hitboxOffset then
+		return false
+	end
+
 	if self.umoa ~= other.umoa then
 		return false
 	end
@@ -196,6 +205,7 @@ function Timing:clone()
 	clone.after = self.after
 	clone.actions = self.actions:clone()
 	clone.hitbox = self.hitbox
+	clone.hitboxOffset = self.hitboxOffset
 	clone.umoa = self.umoa
 	clone.srpn = self.srpn
 	clone.smod = self.smod
@@ -225,6 +235,11 @@ function Timing:serialize()
 			Y = self.hitbox.Y,
 			Z = self.hitbox.Z,
 		},
+		hitboxOffset = {
+			X = self.hitboxOffset.X,
+			Y = self.hitboxOffset.Y,
+			Z = self.hitboxOffset.Z,
+		},
 		srpn = self.srpn,
 		umoa = self.umoa,
 		smod = self.smod,
@@ -253,6 +268,7 @@ function Timing.new(values)
 	self.duih = false
 	self.actions = ActionContainer.new()
 	self.hitbox = Vector3.zero
+	self.hitboxOffset = Vector3.zero
 	self.umoa = false
 	self.srpn = false
 	self.smod = "N/A"
