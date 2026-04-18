@@ -59,9 +59,11 @@ return LPH_NO_VIRTUALIZE(function()
 	local HITBOX_PAD_WIDTH = 2
 	local HITBOX_PAD_HEIGHT = 2
 	local HITBOX_PAD_DEPTH = 4
+	local DEFAULT_HITBOX = Vector3.new(20, 20, 30)
 	local HITBOX_MIN_EXTENT = Vector3.new(8, 8, 12)
 	local HITBOX_MAX_EXTENT = Vector3.new(40, 30, 50)
 	local MIN_HITBOX_SAMPLES = 3
+	local MIN_HITBOX_ADAPT_SAMPLES = 6
 	local MAX_PERSISTED_HITBOX_SAMPLES = 96
 	local MIN_HITBOX_SHRINK_SAMPLES = 12
 	local MIN_HITBOX_SHRINK_RECENT_SAMPLES = 6
@@ -326,6 +328,12 @@ return LPH_NO_VIRTUALIZE(function()
 		return Configuration.expectToggleValue("EnableTimingHarvester") == true
 	end
 
+	---Should combat samples be collected for live hitbox learning?
+	---@return boolean
+	local function sampleCollectionEnabled()
+		return enabled() or Configuration.expectToggleValue("EnableAutoDefense") == true
+	end
+
 	---Find the animation most likely responsible for an outcome observed at time t.
 	---@param t number
 	---@return table?
@@ -393,7 +401,7 @@ return LPH_NO_VIRTUALIZE(function()
 	---@param entity Model?
 	---@param track AnimationTrack?
 	function TimingHarvester.onAnimationStart(aid, entity, track)
-		if not enabled() then
+		if not sampleCollectionEnabled() then
 			return
 		end
 
@@ -602,18 +610,17 @@ return LPH_NO_VIRTUALIZE(function()
 					end
 				end
 
+				if type(bucket) == "table" and type(bucket.pressSamples) == "table" then
+					for _, sample in ipairs(bucket.pressSamples) do
+						if sample.parried then
+							pushSample(runtimeHitboxSample(sample))
+						end
+					end
+				end
+
 				if type(bucket) == "table" and type(bucket.hitSamples) == "table" then
 					for _, sample in ipairs(bucket.hitSamples) do
-						local offset = sample and sample.hitOffset
-						if typeof(offset) == "Vector3" then
-							pushSample({
-								t = sample.t,
-								when = sample.when,
-								x = offset.X,
-								y = offset.Y,
-								z = offset.Z,
-							})
-						end
+						pushSample(runtimeHitboxSample(sample))
 					end
 				end
 
@@ -685,7 +692,7 @@ return LPH_NO_VIRTUALIZE(function()
 
 	---Record a parry press. Opens a pending-outcome window.
 	function TimingHarvester.onParryPress()
-		if not enabled() then
+		if not sampleCollectionEnabled() then
 			return
 		end
 
@@ -726,7 +733,7 @@ return LPH_NO_VIRTUALIZE(function()
 	---Record a Parry or PerfectParry BoolValue flipping true.
 	---@param perfect boolean
 	function TimingHarvester.onParryResult(perfect)
-		if not enabled() then
+		if not sampleCollectionEnabled() then
 			return
 		end
 
@@ -765,7 +772,7 @@ return LPH_NO_VIRTUALIZE(function()
 
 	---Record local player taking damage. Attributes to the most recent nearby animation.
 	local function onDamageObserved()
-		if not enabled() then
+		if not sampleCollectionEnabled() then
 			return
 		end
 
@@ -905,6 +912,14 @@ return LPH_NO_VIRTUALIZE(function()
 			end
 		end
 
+		if type(bucket) == "table" and type(bucket.pressSamples) == "table" then
+			for _, sample in ipairs(bucket.pressSamples) do
+				if sample.parried then
+					pushSample(runtimeHitboxSample(sample))
+				end
+			end
+		end
+
 		if type(bucket) == "table" and type(bucket.hitSamples) == "table" then
 			for _, sample in ipairs(bucket.hitSamples) do
 				pushSample(runtimeHitboxSample(sample))
@@ -949,6 +964,53 @@ return LPH_NO_VIRTUALIZE(function()
 			math.max(HITBOX_MIN_EXTENT.X, math.min(HITBOX_MAX_EXTENT.X, size.X)),
 			math.max(HITBOX_MIN_EXTENT.Y, math.min(HITBOX_MAX_EXTENT.Y, size.Y)),
 			math.max(HITBOX_MIN_EXTENT.Z, math.min(HITBOX_MAX_EXTENT.Z, size.Z))
+		)
+	end
+
+	---Choose a promoted axis length conservatively.
+	---@param currentValue number
+	---@param proposedValue number
+	---@param recentValue number
+	---@param tolerance number
+	---@param shrinkReady boolean
+	---@return number
+	local function chooseAxis(currentValue, proposedValue, recentValue, tolerance, shrinkReady)
+		if recentValue > currentValue + tolerance then
+			return math.max(proposedValue, recentValue)
+		end
+
+		if proposedValue < currentValue - tolerance then
+			return shrinkReady and proposedValue or currentValue
+		end
+
+		return proposedValue
+	end
+
+	---Choose the live or promoted hitbox from the learned state.
+	---@param current Vector3?
+	---@param solved table?
+	---@param fallback Vector3?
+	---@return Vector3
+	local function chooseAdaptedHitbox(current, solved, fallback)
+		local fallbackBox = typeof(fallback) == "Vector3" and fallback or DEFAULT_HITBOX
+		local currentBox = typeof(current) == "Vector3" and current or fallbackBox
+		if type(solved) ~= "table" or typeof(solved.hitbox) ~= "Vector3" then
+			return currentBox
+		end
+
+		if (solved.hitboxSamples or 0) < MIN_HITBOX_ADAPT_SAMPLES then
+			return currentBox
+		end
+
+		local proposed = solved.hitbox
+		local recentBox = typeof(solved.hitboxRecentRequired) == "Vector3" and solved.hitboxRecentRequired or proposed
+		local shrinkReady = (solved.hitboxSamples or 0) >= MIN_HITBOX_SHRINK_SAMPLES
+			and (solved.hitboxRecentSampleCount or 0) >= MIN_HITBOX_SHRINK_RECENT_SAMPLES
+
+		return Vector3.new(
+			chooseAxis(currentBox.X, proposed.X, recentBox.X, HITBOX_SHRINK_TOLERANCE.X, shrinkReady),
+			chooseAxis(currentBox.Y, proposed.Y, recentBox.Y, HITBOX_SHRINK_TOLERANCE.Y, shrinkReady),
+			chooseAxis(currentBox.Z, proposed.Z, recentBox.Z, HITBOX_SHRINK_TOLERANCE.Z, shrinkReady)
 		)
 	end
 
@@ -1090,6 +1152,78 @@ return LPH_NO_VIRTUALIZE(function()
 		return safeSize, baseCenter, sampleCount, recentRequired, #recentSamples
 	end
 
+	---Solve the current learned hitbox state for an animation id.
+	---@param aid string
+	---@return table
+	local function solveLiveHitboxState(aid)
+		local learnedSamples = mergedHitboxSamples(aid, samples[aid])
+		local hitbox, hitboxOffset, hitboxSamples, hitboxRecentRequired, hitboxRecentSampleCount = solveHitboxShape(learnedSamples)
+
+		return {
+			samples = learnedSamples,
+			hitbox = hitbox,
+			hitboxOffset = hitboxOffset,
+			hitboxSamples = hitboxSamples,
+			hitboxRecentRequired = hitboxRecentRequired,
+			hitboxRecentSampleCount = hitboxRecentSampleCount,
+		}
+	end
+
+	---Return whether the learned hitbox is ready to override the base rectangle.
+	---@param solved table?
+	---@return boolean
+	local function adaptiveHitboxReady(solved)
+		return type(solved) == "table"
+			and typeof(solved.hitbox) == "Vector3"
+			and (solved.hitboxSamples or 0) >= MIN_HITBOX_ADAPT_SAMPLES
+	end
+
+	---Return the live hitbox shape, center, and facing mode for an animation.
+	---@param aid string
+	---@param when number?
+	---@param fallbackHitbox Vector3?
+	---@param fallbackOffset Vector3?
+	---@param fallbackFacing boolean?
+	---@return table
+	function TimingHarvester.liveHitbox(aid, when, fallbackHitbox, fallbackOffset, fallbackFacing)
+		local hitbox = typeof(fallbackHitbox) == "Vector3" and fallbackHitbox or DEFAULT_HITBOX
+		local hitboxOffset = typeof(fallbackOffset) == "Vector3" and fallbackOffset or Vector3.zero
+		local facing = fallbackFacing == true
+
+		if type(aid) ~= "string" or aid == "" then
+			return {
+				hitbox = hitbox,
+				offset = hitboxOffset,
+				facing = facing,
+				adaptive = false,
+				samples = 0,
+			}
+		end
+
+		local solved = solveLiveHitboxState(aid)
+		if not adaptiveHitboxReady(solved) then
+			return {
+				hitbox = hitbox,
+				offset = hitboxOffset,
+				facing = facing,
+				adaptive = false,
+				samples = solved.hitboxSamples or 0,
+			}
+		end
+
+		local dynamicOffset = type(when) == "number"
+			and (motionCenterFromSamples(solved.samples, when) or solved.hitboxOffset)
+			or solved.hitboxOffset
+
+		return {
+			hitbox = chooseAdaptedHitbox(hitbox, solved, hitbox),
+			offset = typeof(dynamicOffset) == "Vector3" and dynamicOffset or hitboxOffset,
+			facing = false,
+			adaptive = true,
+			samples = solved.hitboxSamples or 0,
+		}
+	end
+
 	---Return a motion-aware hitbox center for the given animation time.
 	---@param aid string
 	---@param when number
@@ -1100,12 +1234,12 @@ return LPH_NO_VIRTUALIZE(function()
 			return fallback
 		end
 
-		local mergedSamples = mergedHitboxSamples(aid, samples[aid])
-		if #mergedSamples < MIN_HITBOX_SAMPLES then
+		local liveHitbox = TimingHarvester.liveHitbox(aid, when, nil, fallback, false)
+		if type(liveHitbox) ~= "table" then
 			return fallback
 		end
 
-		return motionCenterFromSamples(mergedSamples, when) or fallback
+		return typeof(liveHitbox.offset) == "Vector3" and liveHitbox.offset or fallback
 	end
 
 	---Pick a slightly early timing inside a solved success window.
@@ -1167,8 +1301,12 @@ return LPH_NO_VIRTUALIZE(function()
 		local parryHi = percentile(parryWhens, 0.9)
 		local hitLo = percentile(hitWhens, 0.1)
 		local hitHi = percentile(hitWhens, 0.9)
-		local learnedSamples = mergedHitboxSamples(aid, b)
-		local hitbox, hitboxOffset, hitboxSamples, hitboxRecentRequired, hitboxRecentSampleCount = solveHitboxShape(learnedSamples)
+		local liveHitbox = solveLiveHitboxState(aid)
+		local hitbox = liveHitbox.hitbox
+		local hitboxOffset = liveHitbox.hitboxOffset
+		local hitboxSamples = liveHitbox.hitboxSamples
+		local hitboxRecentRequired = liveHitbox.hitboxRecentRequired
+		local hitboxRecentSampleCount = liveHitbox.hitboxRecentSampleCount
 
 		-- Mashle parry becomes active slightly before impact, so midpoint timings trend late.
 		-- Bias harvested timings toward the early side of successful parry samples.
@@ -1350,43 +1488,17 @@ return LPH_NO_VIRTUALIZE(function()
 		local profilePingMs = math.max(0, math.round(solved.medianPingMs or (rttSeconds() * 1000)))
 		local existingConfig = SaveManager.as.config and SaveManager.as.config.timings[aid]
 
-		local defaultHitbox = Vector3.new(20, 20, 30)
+		local defaultHitbox = DEFAULT_HITBOX
 		local learnedHitbox = solved.hitbox
 		local learnedHitboxOffset = solved.hitboxOffset
-		local recentRequired = typeof(solved.hitboxRecentRequired) == "Vector3" and solved.hitboxRecentRequired or learnedHitbox
-
-		local function chooseAxis(currentValue, proposedValue, recentValue, tolerance, shrinkReady)
-			if recentValue > currentValue + tolerance then
-				return math.max(proposedValue, recentValue)
-			end
-
-			if proposedValue < currentValue - tolerance then
-				return shrinkReady and proposedValue or currentValue
-			end
-
-			return proposedValue
-		end
-
-		local function choosePromotedHitbox(current)
-			local proposed = typeof(learnedHitbox) == "Vector3" and learnedHitbox or current or defaultHitbox
-			local currentBox = typeof(current) == "Vector3" and current or defaultHitbox
-			local recentBox = typeof(recentRequired) == "Vector3" and recentRequired or proposed
-			local shrinkReady = (solved.hitboxSamples or 0) >= MIN_HITBOX_SHRINK_SAMPLES
-				and (solved.hitboxRecentSampleCount or 0) >= MIN_HITBOX_SHRINK_RECENT_SAMPLES
-
-			return Vector3.new(
-				chooseAxis(currentBox.X, proposed.X, recentBox.X, HITBOX_SHRINK_TOLERANCE.X, shrinkReady),
-				chooseAxis(currentBox.Y, proposed.Y, recentBox.Y, HITBOX_SHRINK_TOLERANCE.Y, shrinkReady),
-				chooseAxis(currentBox.Z, proposed.Z, recentBox.Z, HITBOX_SHRINK_TOLERANCE.Z, shrinkReady)
-			)
-		end
+		local adaptiveShapeReady = adaptiveHitboxReady(solved)
 
 		local function applyLearnedShape(target)
-			if typeof(learnedHitbox) ~= "Vector3" or typeof(learnedHitboxOffset) ~= "Vector3" then
+			if not adaptiveShapeReady or typeof(learnedHitboxOffset) ~= "Vector3" then
 				return false
 			end
 
-			target.hitbox = choosePromotedHitbox(target.hitbox)
+			target.hitbox = chooseAdaptedHitbox(target.hitbox, solved, defaultHitbox)
 			target.hitboxOffset = learnedHitboxOffset
 
 			if target.fhb ~= nil then
@@ -1420,7 +1532,7 @@ return LPH_NO_VIRTUALIZE(function()
 			local hb = existingConfig.hitbox
 			local hbo = existingConfig.hitboxOffset
 			Logger.notify(
-				"[Harvester] Updated '%s' with %.0fms @ %dms RTT (%d profiles) hitbox=(%.1f, %.1f, %.1f) offset=(%.1f, %.1f, %.1f) from %d dmg pts.",
+				"[Harvester] Updated '%s' with %.0fms @ %dms RTT (%d profiles) hitbox=(%.1f, %.1f, %.1f) offset=(%.1f, %.1f, %.1f) from %d contact pts.",
 				existingConfig.name,
 				solved.bestWhen * 1000,
 				profilePingMs,
@@ -1454,9 +1566,9 @@ return LPH_NO_VIRTUALIZE(function()
 		timing.tag = "Undefined"
 		timing.imdd = math.max(0, math.floor(solved.minDistance - 2))
 		timing.imxd = math.ceil(solved.maxDistance + 5)
-		timing.hitbox = learnedHitbox or defaultHitbox
-		timing.hitboxOffset = typeof(learnedHitboxOffset) == "Vector3" and learnedHitboxOffset or Vector3.zero
-		timing.fhb = typeof(learnedHitboxOffset) ~= "Vector3"
+		timing.hitbox = chooseAdaptedHitbox(defaultHitbox, solved, defaultHitbox)
+		timing.hitboxOffset = adaptiveShapeReady and typeof(learnedHitboxOffset) == "Vector3" and learnedHitboxOffset or Vector3.zero
+		timing.fhb = not adaptiveShapeReady
 		timing.pfh = true
 		timing.pfht = 0.15
 
@@ -1464,8 +1576,8 @@ return LPH_NO_VIRTUALIZE(function()
 		action.name = string.format("Action_Harvested_n%d", solved.sampleCount)
 		action._type = "Parry"
 		action._when = PP_SCRAMBLE_RE_NUM(whenMs)
-		action.hitbox = learnedHitbox or defaultHitbox
-		action.hitboxOffset = typeof(learnedHitboxOffset) == "Vector3" and learnedHitboxOffset or Vector3.zero
+		action.hitbox = chooseAdaptedHitbox(defaultHitbox, solved, defaultHitbox)
+		action.hitboxOffset = adaptiveShapeReady and typeof(learnedHitboxOffset) == "Vector3" and learnedHitboxOffset or Vector3.zero
 		action.ihbc = false
 		action:addPingProfile(profilePingMs, whenMs, solved.sampleCount)
 		timing.actions:push(action)
@@ -1478,7 +1590,7 @@ return LPH_NO_VIRTUALIZE(function()
 		local promotedHb = timing.hitbox
 		local promotedOffset = timing.hitboxOffset
 		Logger.notify(
-			"[Harvester] Promoted '%s' when=%.0fms @ %dms RTT (n=%d perfect=%d parry=%d conf=%.2f) hitbox=(%.1f, %.1f, %.1f) offset=(%.1f, %.1f, %.1f) from %d dmg pts.",
+			"[Harvester] Promoted '%s' when=%.0fms @ %dms RTT (n=%d perfect=%d parry=%d conf=%.2f) hitbox=(%.1f, %.1f, %.1f) offset=(%.1f, %.1f, %.1f) from %d contact pts.",
 			name,
 			solved.bestWhen * 1000,
 			profilePingMs,

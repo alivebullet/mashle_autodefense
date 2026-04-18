@@ -576,11 +576,12 @@ Defender.hc = LPH_NO_VIRTUALIZE(function(self, options, info)
 
 	-- Fetch the data that we need.
 	local hitbox = options:hitbox()
+	local facingHitbox = options:facingHitbox()
 	local eposition = options.spredict and options:extrapolate() or nil
 	local position = options:pos()
 
 	-- Run hitbox check.
-	local result, usedCFrame = self:hitbox(position, timing.fhb, hitbox, options.filter)
+	local result, usedCFrame = self:hitbox(position, facingHitbox, hitbox, options.filter)
 
 	if usedCFrame then
 		self:visualize(options.hmid, usedCFrame, hitbox, options:ghcolor(result))
@@ -601,7 +602,7 @@ Defender.hc = LPH_NO_VIRTUALIZE(function(self, options, info)
 
 	-- Run check.
 	store:run(root, "CFrame", closest, function()
-		result, usedCFrame = self:hitbox(eposition, timing.fhb, hitbox, options.filter)
+		result, usedCFrame = self:hitbox(eposition, facingHitbox, hitbox, options.filter)
 	end)
 
 	-- Visualize predicted hitbox.

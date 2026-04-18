@@ -19,6 +19,44 @@ HitboxOptions.__index = HitboxOptions
 -- Services.
 local players = game:GetService("Players")
 
+---Return the best action time-position available for adaptive hitbox lookup.
+---@param action Action?
+---@return number?
+local function actionWhen(action)
+	if not action then
+		return nil
+	end
+
+	if type(action.tp) == "number" then
+		return action.tp
+	end
+
+	if type(action.when) == "function" then
+		local ok, value = pcall(action.when, action)
+		if ok and type(value) == "number" then
+			return value
+		end
+	end
+
+	return nil
+end
+
+---Return the timing animation id if available.
+---@param timing Timing|AnimationTiming|SoundTiming
+---@return string?
+local function timingId(timing)
+	if not timing or type(timing.id) ~= "function" then
+		return nil
+	end
+
+	local ok, aid = pcall(timing.id, timing)
+	if ok and type(aid) == "string" and aid ~= "" then
+		return aid
+	end
+
+	return nil
+end
+
 ---Hit color.
 ---@return Color3
 function HitboxOptions:ghcolor(result)
@@ -49,17 +87,68 @@ function HitboxOptions:clone()
 	options.part = self.part
 	options.cframe = self.cframe
 	options.timing = self.timing
+	options._adaptiveHitbox = nil
 	return options
+end
+
+---Return the effective live hitbox state for this check.
+---@return table
+function HitboxOptions:adaptiveHitbox()
+	if type(self._adaptiveHitbox) == "table" then
+		return self._adaptiveHitbox
+	end
+
+	local hitbox = self.action and self.action.hitbox or self.timing.hitbox
+	local hitboxOffset = self.action and self.action.hitboxOffset or self.timing.hitboxOffset
+	local facing = self.timing.fhb == true
+
+	if self.timing.duih then
+		hitbox = self.timing.hitbox
+		hitboxOffset = self.timing.hitboxOffset
+	end
+
+	if typeof(hitbox) ~= "Vector3" then
+		hitbox = Vector3.zero
+	end
+
+	if typeof(hitboxOffset) ~= "Vector3" then
+		hitboxOffset = Vector3.zero
+	end
+
+	local aid = timingId(self.timing)
+	if aid then
+		local okHarvester, TimingHarvester = pcall(require, "Features/Combat/TimingHarvester")
+		if okHarvester and type(TimingHarvester) == "table" and type(TimingHarvester.liveHitbox) == "function" then
+			local dynamic = TimingHarvester.liveHitbox(aid, actionWhen(self.action), hitbox, hitboxOffset, facing)
+			if type(dynamic) == "table" then
+				if typeof(dynamic.hitbox) == "Vector3" then
+					hitbox = dynamic.hitbox
+				end
+
+				if typeof(dynamic.offset) == "Vector3" then
+					hitboxOffset = dynamic.offset
+				end
+
+				if type(dynamic.facing) == "boolean" then
+					facing = dynamic.facing
+				end
+			end
+		end
+	end
+
+	self._adaptiveHitbox = {
+		hitbox = hitbox,
+		offset = hitboxOffset,
+		facing = facing,
+	}
+
+	return self._adaptiveHitbox
 end
 
 ---Get the hitbox size.
 ---@return Vector3
 function HitboxOptions:hitbox()
-	local hitbox = self.action and self.action.hitbox or self.timing.hitbox
-
-	if self.timing.duih then
-		hitbox = self.timing.hitbox
-	end
+	local hitbox = self:adaptiveHitbox().hitbox
 
 	hitbox = Vector3.new(PP_SCRAMBLE_NUM(hitbox.X), PP_SCRAMBLE_NUM(hitbox.Y), PP_SCRAMBLE_NUM(hitbox.Z))
 
@@ -69,45 +158,19 @@ end
 ---Get the hitbox center offset.
 ---@return Vector3
 function HitboxOptions:hitboxOffset()
-	local hitboxOffset = self.action and self.action.hitboxOffset or self.timing.hitboxOffset
-
-	if self.timing.duih then
-		hitboxOffset = self.timing.hitboxOffset
-	end
-
-	if typeof(hitboxOffset) ~= "Vector3" then
-		hitboxOffset = Vector3.zero
-	end
-
-	local offsetWhen = nil
-	if self.action then
-		offsetWhen = type(self.action.tp) == "number" and self.action.tp or nil
-		if offsetWhen == nil and type(self.action.when) == "function" then
-			local ok, value = pcall(self.action.when, self.action)
-			if ok and type(value) == "number" then
-				offsetWhen = value
-			end
-		end
-	end
-
-	if type(offsetWhen) == "number" and self.timing and type(self.timing.id) == "function" then
-		local okId, aid = pcall(self.timing.id, self.timing)
-		if okId and type(aid) == "string" and aid ~= "" then
-			local okHarvester, TimingHarvester = pcall(require, "Features/Combat/TimingHarvester")
-			if okHarvester and type(TimingHarvester) == "table" and type(TimingHarvester.hitboxOffsetAt) == "function" then
-				local dynamicOffset = TimingHarvester.hitboxOffsetAt(aid, offsetWhen, hitboxOffset)
-				if typeof(dynamicOffset) == "Vector3" then
-					hitboxOffset = dynamicOffset
-				end
-			end
-		end
-	end
+	local hitboxOffset = self:adaptiveHitbox().offset
 
 	return Vector3.new(
 		PP_SCRAMBLE_NUM(hitboxOffset.X),
 		PP_SCRAMBLE_NUM(hitboxOffset.Y),
 		PP_SCRAMBLE_NUM(hitboxOffset.Z)
 	)
+end
+
+---Should this hitbox still use the original forward-facing rectangle offset?
+---@return boolean
+function HitboxOptions:facingHitbox()
+	return self:adaptiveHitbox().facing == true
 end
 
 ---Get extrapolated position.
