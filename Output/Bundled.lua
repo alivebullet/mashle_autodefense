@@ -20578,6 +20578,7 @@ return LPH_NO_VIRTUALIZE(function()
 
 	local groupedNpcList = {}
 	local groupedNpcMap = {}
+	local refreshIssue = nil
 
 	local screenGui = CoreGuiManager.imark(Instance.new("ScreenGui"))
 	screenGui.Name = "ConfigViewerPanel"
@@ -20983,6 +20984,15 @@ return LPH_NO_VIRTUALIZE(function()
 
 	local function setStatus(text)
 		statusLabel.Text = text
+	end
+
+	local function noteRefreshIssue(message)
+		if refreshIssue then
+			return
+		end
+
+		refreshIssue = tostring(message)
+		Logger.warn("[ConfigViewer] %s", refreshIssue)
 	end
 
 	local function normalizedGroupName(value)
@@ -21615,63 +21625,69 @@ return LPH_NO_VIRTUALIZE(function()
 		npcCountLabel.Text = string.format("NPC Groups: %d", #groupedNpcList)
 
 		for index, group in ipairs(groupedNpcList) do
-			local groupDisplayName = displayGroupName(group.name)
-			local entry = Instance.new("TextButton")
-			entry.AutoButtonColor = false
-			entry.Text = ""
-			entry.LayoutOrder = index
-			entry.BackgroundColor3 = group.name == state.selectedNpc and Library.AccentColor or Color3.fromRGB(26, 26, 26)
-			entry.BackgroundTransparency = group.name == state.selectedNpc and 0.55 or 0
-			entry.BorderSizePixel = 0
-			entry.Size = UDim2.new(1, -2, 0, NPC_ENTRY_H)
-			entry.Parent = npcScroll
+			local ok, err = pcall(function()
+				local groupDisplayName = displayGroupName(group.name)
+				local entry = Instance.new("TextButton")
+				entry.AutoButtonColor = false
+				entry.Text = ""
+				entry.LayoutOrder = index
+				entry.BackgroundColor3 = group.name == state.selectedNpc and Library.AccentColor or Color3.fromRGB(26, 26, 26)
+				entry.BackgroundTransparency = group.name == state.selectedNpc and 0.55 or 0
+				entry.BorderSizePixel = 0
+				entry.Size = UDim2.new(1, -2, 0, NPC_ENTRY_H)
+				entry.Parent = npcScroll
 
-			npcMaid:add(entry)
-			thumbnailForGroup(entry, group)
+				npcMaid:add(entry)
+				thumbnailForGroup(entry, group)
 
-			local nameLabel = Instance.new("TextLabel")
-			nameLabel.FontFace = FONT
-			nameLabel.TextColor3 = Library.FontColor
-			nameLabel.Text = groupDisplayName
-			nameLabel.BackgroundTransparency = 1
-			nameLabel.Position = UDim2.new(0, 70, 0, 9)
-			nameLabel.Size = UDim2.new(1, -78, 0, 18)
-			nameLabel.TextXAlignment = Enum.TextXAlignment.Left
-			nameLabel.TextSize = 14
-			nameLabel.Parent = entry
+				local nameLabel = Instance.new("TextLabel")
+				nameLabel.FontFace = FONT
+				nameLabel.TextColor3 = Library.FontColor
+				nameLabel.Text = groupDisplayName
+				nameLabel.BackgroundTransparency = 1
+				nameLabel.Position = UDim2.new(0, 70, 0, 9)
+				nameLabel.Size = UDim2.new(1, -78, 0, 18)
+				nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+				nameLabel.TextSize = 14
+				nameLabel.Parent = entry
 
-			registerTheme(nameLabel, {
-				TextColor3 = "FontColor",
-			})
+				registerTheme(nameLabel, {
+					TextColor3 = "FontColor",
+				})
 
-			local countLabel = Instance.new("TextLabel")
-			countLabel.FontFace = FONT
-			countLabel.TextColor3 = Color3.fromRGB(168, 168, 168)
-			countLabel.Text = string.format("%d saved timing%s", #group.timings, #group.timings == 1 and "" or "s")
-			countLabel.BackgroundTransparency = 1
-			countLabel.Position = UDim2.new(0, 70, 0, 31)
-			countLabel.Size = UDim2.new(1, -78, 0, 15)
-			countLabel.TextXAlignment = Enum.TextXAlignment.Left
-			countLabel.TextSize = 11
-			countLabel.Parent = entry
+				local countLabel = Instance.new("TextLabel")
+				countLabel.FontFace = FONT
+				countLabel.TextColor3 = Color3.fromRGB(168, 168, 168)
+				countLabel.Text = string.format("%d saved timing%s", #group.timings, #group.timings == 1 and "" or "s")
+				countLabel.BackgroundTransparency = 1
+				countLabel.Position = UDim2.new(0, 70, 0, 31)
+				countLabel.Size = UDim2.new(1, -78, 0, 15)
+				countLabel.TextXAlignment = Enum.TextXAlignment.Left
+				countLabel.TextSize = 11
+				countLabel.Parent = entry
 
-			local aidLabel = Instance.new("TextLabel")
-			aidLabel.FontFace = FONT
-			aidLabel.TextColor3 = Color3.fromRGB(132, 132, 132)
-			aidLabel.Text = string.format("First ID: %s", timingAid(group.timings[1]) or "-")
-			aidLabel.BackgroundTransparency = 1
-			aidLabel.Position = UDim2.new(0, 70, 0, 47)
-			aidLabel.Size = UDim2.new(1, -78, 0, 14)
-			aidLabel.TextXAlignment = Enum.TextXAlignment.Left
-			aidLabel.TextSize = 10
-			aidLabel.Parent = entry
+				local aidLabel = Instance.new("TextLabel")
+				aidLabel.FontFace = FONT
+				aidLabel.TextColor3 = Color3.fromRGB(132, 132, 132)
+				aidLabel.Text = string.format("First ID: %s", timingAid(group.timings[1]) or "-")
+				aidLabel.BackgroundTransparency = 1
+				aidLabel.Position = UDim2.new(0, 70, 0, 47)
+				aidLabel.Size = UDim2.new(1, -78, 0, 14)
+				aidLabel.TextXAlignment = Enum.TextXAlignment.Left
+				aidLabel.TextSize = 10
+				aidLabel.Parent = entry
 
-			npcMaid:add(entry.MouseButton1Click:Connect(function()
-				state.selectedNpc = group.name
-				state.selectedTiming = nil
-				state.selectedAction = nil
-				ConfigViewerPanel.refresh(false)
-			end))
+				npcMaid:add(entry.MouseButton1Click:Connect(function()
+					state.selectedNpc = group.name
+					state.selectedTiming = nil
+					state.selectedAction = nil
+					ConfigViewerPanel.refresh(false)
+				end))
+			end)
+
+			if not ok then
+				noteRefreshIssue(string.format("NPC row '%s' failed to render: %s", displayGroupName(group and group.name), tostring(err)))
+			end
 		end
 	end
 
@@ -21703,45 +21719,51 @@ return LPH_NO_VIRTUALIZE(function()
 		animationHintLabel.Text = string.format("Browsing '%s'. Rename the saved animation name or change its action timing on the right.", group.name)
 
 		for index, timing in ipairs(timings) do
-			local selected = timing == state.selectedTiming
-			local entry = Instance.new("TextButton")
-			entry.AutoButtonColor = false
-			entry.Text = ""
-			entry.LayoutOrder = index
-			entry.BackgroundColor3 = selected and Library.AccentColor or Color3.fromRGB(26, 26, 26)
-			entry.BackgroundTransparency = selected and 0.55 or 0
-			entry.BorderSizePixel = 0
-			entry.Size = UDim2.new(1, -2, 0, ANIM_ENTRY_H)
-			entry.Parent = animationScroll
+			local ok, err = pcall(function()
+				local selected = timing == state.selectedTiming
+				local entry = Instance.new("TextButton")
+				entry.AutoButtonColor = false
+				entry.Text = ""
+				entry.LayoutOrder = index
+				entry.BackgroundColor3 = selected and Library.AccentColor or Color3.fromRGB(26, 26, 26)
+				entry.BackgroundTransparency = selected and 0.55 or 0
+				entry.BorderSizePixel = 0
+				entry.Size = UDim2.new(1, -2, 0, ANIM_ENTRY_H)
+				entry.Parent = animationScroll
 
-			animationMaid:add(entry)
+				animationMaid:add(entry)
 
-			local nameLabel = makeLabel(entry, timing.name, UDim2.new(0, 8, 0, 8), UDim2.new(1, -16, 0, 18), 13, false)
-			nameLabel.TextColor3 = Library.FontColor
-			local aidLabel = makeLabel(
-				entry,
-				string.format("ID: %s", timingAid(timing) or "-"),
-				UDim2.new(0, 8, 0, 28),
-				UDim2.new(1, -16, 0, 14),
-				11,
-				false
-			)
-			aidLabel.TextColor3 = Color3.fromRGB(170, 170, 170)
-			local metaLabel = makeLabel(
-				entry,
-				animationSummary(timing),
-				UDim2.new(0, 8, 0, 42),
-				UDim2.new(1, -16, 0, 14),
-				10,
-				false
-			)
-			metaLabel.TextColor3 = Color3.fromRGB(132, 132, 132)
+				local nameLabel = makeLabel(entry, timing.name, UDim2.new(0, 8, 0, 8), UDim2.new(1, -16, 0, 18), 13, false)
+				nameLabel.TextColor3 = Library.FontColor
+				local aidLabel = makeLabel(
+					entry,
+					string.format("ID: %s", timingAid(timing) or "-"),
+					UDim2.new(0, 8, 0, 28),
+					UDim2.new(1, -16, 0, 14),
+					11,
+					false
+				)
+				aidLabel.TextColor3 = Color3.fromRGB(170, 170, 170)
+				local metaLabel = makeLabel(
+					entry,
+					animationSummary(timing),
+					UDim2.new(0, 8, 0, 42),
+					UDim2.new(1, -16, 0, 14),
+					10,
+					false
+				)
+				metaLabel.TextColor3 = Color3.fromRGB(132, 132, 132)
 
-			animationMaid:add(entry.MouseButton1Click:Connect(function()
-				state.selectedTiming = timing
-				state.selectedAction = nil
-				ConfigViewerPanel.refresh(false)
-			end))
+				animationMaid:add(entry.MouseButton1Click:Connect(function()
+					state.selectedTiming = timing
+					state.selectedAction = nil
+					ConfigViewerPanel.refresh(false)
+				end))
+			end)
+
+			if not ok then
+				noteRefreshIssue(string.format("Animation row '%s' failed to render: %s", tostring(timing and timing.name or "?"), tostring(err)))
+			end
 		end
 	end
 
@@ -21870,37 +21892,50 @@ return LPH_NO_VIRTUALIZE(function()
 	end
 
 	function ConfigViewerPanel.refresh(reloadPreview)
-		collectGroups()
-		ensureSelections()
-		refreshNpcEntries()
-		refreshAnimationEntries()
-		refreshActionEntries()
-		refreshBannedEntries()
-		updateEditorTexts()
+		refreshIssue = nil
 
-		if reloadPreview ~= false then
-			syncPreview()
-		else
-			if previewTiming ~= state.selectedTiming then
+		local ok, err = pcall(function()
+			collectGroups()
+			ensureSelections()
+			refreshNpcEntries()
+			refreshAnimationEntries()
+			refreshActionEntries()
+			refreshBannedEntries()
+			updateEditorTexts()
+
+			if reloadPreview ~= false then
 				syncPreview()
 			else
-				refreshMarkers()
+				if previewTiming ~= state.selectedTiming then
+					syncPreview()
+				else
+					refreshMarkers()
+				end
 			end
-		end
 
-		if #groupedNpcList == 0 then
-			if not SaveManager.llcn or #SaveManager.llcn <= 0 then
-				setStatus("No config loaded. Use the Config Viewer tab to load one.")
+			if refreshIssue then
+				setStatus(refreshIssue)
+			elseif #groupedNpcList == 0 then
+				if not SaveManager.llcn or #SaveManager.llcn <= 0 then
+					setStatus("No config loaded. Use the Config Viewer tab to load one.")
+				else
+					setStatus(string.format("Loaded config '%s' has no saved animation timings.", SaveManager.llcn))
+				end
 			else
-				setStatus(string.format("Loaded config '%s' has no saved animation timings.", SaveManager.llcn))
-			end
-		else
-			local bannedIds = 0
-			for _ in next, TimingHarvester.getBanned() do
-				bannedIds = bannedIds + 1
-			end
+				local bannedIds = 0
+				for _ in next, TimingHarvester.getBanned() do
+					bannedIds = bannedIds + 1
+				end
 
-			setStatus(string.format("Browsing %d NPC groups and %d banned animation IDs.", #groupedNpcList, bannedIds))
+				setStatus(string.format("Browsing %d NPC groups and %d banned animation IDs.", #groupedNpcList, bannedIds))
+			end
+		end)
+
+		if not ok then
+			local message = string.format("Config Viewer refresh failed: %s", tostring(err))
+			setStatus(message)
+			Logger.warn("[ConfigViewer] %s", message)
+			return false
 		end
 
 		return true
